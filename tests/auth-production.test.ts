@@ -6,8 +6,6 @@ import { join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
 import { promisify } from "node:util";
 import { beforeAll, describe, expect, it } from "vitest";
-// @ts-expect-error -- plain .mjs module without type declarations; it is the
-// single source of truth for the build-input set and fingerprint algorithm.
 import { buildFingerprintPath, buildInputs, getBuildFingerprint } from "../scripts/record-build-fingerprint.mjs";
 
 const buildIdPath = ".next/BUILD_ID";
