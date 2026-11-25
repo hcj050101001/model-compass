@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { eq, and, gt, desc } from "drizzle-orm";
-import { ensureSchema, getDb } from "@/lib/database";
+import { assertSchemaCompatible, getDb } from "@/lib/database";
 import {
   benchmarkMeasurements,
   dataSnapshots,
@@ -10,7 +10,7 @@ import {
   syncJobs,
   syncLocks,
 } from "@/lib/database/schema";
-import { getActiveMeasurements } from "@/lib/database/queries";
+import { getActiveMeasurements, getSnapshotReconciliation } from "@/lib/database/queries";
 import { runArtificialAnalysisAdapter } from "@/lib/data-sources/artificial-analysis/adapter";
 import {
   mapAAModelsToNormalized,
@@ -27,6 +27,7 @@ import type {
   AgentCostSummary,
   AgentUsageSummary,
   DataQualitySummary,
+  PricingProvenance,
   RawAgentSessionRecord,
 } from "@/lib/agent-cost/types";
 import { exportStandardizedSnapshotFiles } from "./standardized-export";
@@ -54,6 +55,12 @@ export interface EnrichedMeasurementExtra {
   dataSourceType: string;
   dataSourcesJson: string;
   dataUpdatedAt: string;
+  /** Package C: serialized per-field pricing provenance for this row. */
+  fieldSourcesJson?: string;
+  /** Package C: serialized quality-evidence envelope (grading + breakdown). */
+  qualityEvidenceJson?: string;
+  /** Package C: digest of the exact measured sample set (hash input). */
+  sampleSetDigest?: string;
 }
 
 export function computeBundleContentHash(
@@ -61,8 +68,13 @@ export function computeBundleContentHash(
   indexVersion: string,
   extras?: Map<string, EnrichedMeasurementExtra>
 ): string {
+  const releaseByVariantId = new Map<string, string>();
+  for (const v of bundle.variants) releaseByVariantId.set(v.id, v.modelReleaseId);
   const canonical = {
     indexVersion,
+    // Package C: template/evidence version placeholder until Package D lands
+    // its template version constant (design sec.2.4 reserves this field).
+    evidenceVersion: "c-evidence-v1",
     creators: bundle.creators.map((c) => c.slug).sort(),
     variants: bundle.variants
       .map((v) => ({
@@ -74,6 +86,8 @@ export function computeBundleContentHash(
     measurements: bundle.measurements
       .map((m) => ({
         variantId: m.variantId,
+        // Frozen release identity participates in the hash.
+        releaseId: releaseByVariantId.get(m.variantId) ?? null,
         intelligenceScore: m.intelligenceScore,
         codingScore: m.codingScore,
         agenticScore: m.agenticScore,
@@ -85,6 +99,10 @@ export function computeBundleContentHash(
         timeToFirstToken: m.timeToFirstToken,
         qualityLevel: extras?.get(m.variantId)?.dataQualityLevel ?? "D",
         agentCost: extras?.get(m.variantId)?.agentCostJson ?? null,
+        // Source changes change the hash even when values are identical.
+        fieldSources: extras?.get(m.variantId)?.fieldSourcesJson ?? null,
+        // Sample-set changes change the hash even when aggregates are equal.
+        sampleSetDigest: extras?.get(m.variantId)?.sampleSetDigest ?? null,
       }))
       .sort((a, b) => a.variantId.localeCompare(b.variantId)),
   };
@@ -188,8 +206,20 @@ function computeBundleAgentCosts(params: {
           [])
       : [];
 
-    // Filter by effort if session specifies reasoningEffort and variant has effortNormalized
+    // Filter by effort if session specifies reasoningEffort and variant has effortNormalized.
+    // Package C: a session whose provider does not match the release creator
+    // never matches, even when model names collide across vendors.
+    const creatorSlug = release
+      ? bundle.creators.find((c) => c.id === release.creatorId)?.slug
+      : undefined;
     const effortFiltered = matchedSessions.filter((s) => {
+      if (
+        creatorSlug &&
+        s.provider &&
+        normalizeModelLookup(s.provider) !== normalizeModelLookup(creatorSlug)
+      ) {
+        return false;
+      }
       if (!s.reasoningEffort || !variant?.effortNormalized) return true;
       return (
         s.reasoningEffort.toLowerCase() === variant.effortNormalized.toLowerCase()
@@ -223,7 +253,37 @@ function computeBundleAgentCosts(params: {
       sources,
       updatedAt: fetchedAt,
       effortTokenDiffKnown: effortFiltered.some((s) => Boolean(s.reasoningEffort)),
+      now: fetchedAt,
+      billedSampleCount: rascResult.billedSampleCount,
+      tokenPricedSampleCount: rascResult.tokenPricedSampleCount,
+      billedAmountUsd: rascResult.billedAmountUsd,
+      tokenPricedAmountUsd: rascResult.tokenPricedAmountUsd,
+      verifiedEffort: variant?.effortNormalized ?? null,
     });
+
+    // Per-field provenance: fields with a value but no recorded origin are
+    // marked source "unknown" (distinct from a missing/null value).
+    const provenance: PricingProvenance = { ...(m.fieldSources ?? {}) };
+    const pricedFields: Array<
+      ["input" | "output" | "cacheRead" | "cacheWrite", number | null]
+    > = [
+      ["input", m.inputPricePerMillion],
+      ["output", m.outputPricePerMillion],
+      ["cacheRead", m.cacheReadPricePerMillion],
+      ["cacheWrite", m.cacheWritePricePerMillion],
+    ];
+    for (const [field, value] of pricedFields) {
+      if (value !== null && !provenance[field]) {
+        provenance[field] = {
+          source: "unknown",
+          upstreamKey: null,
+          currency: null,
+          unit: null,
+          observedAt: null,
+          firstObservedAt: null,
+        };
+      }
+    }
 
     extras.set(m.variantId, {
       agentUsageJson: JSON.stringify(agentUsage),
@@ -232,6 +292,13 @@ function computeBundleAgentCosts(params: {
       dataSourceType: dataQuality.source_type,
       dataSourcesJson: JSON.stringify(dataQuality.sources),
       dataUpdatedAt: fetchedAt,
+      fieldSourcesJson: JSON.stringify(provenance),
+      qualityEvidenceJson: JSON.stringify({
+        version: "c-evidence-v1",
+        quality: dataQuality,
+        sampleSetDigest: rascResult.sampleSetDigest,
+      }),
+      sampleSetDigest: rascResult.sampleSetDigest,
     });
   }
 
@@ -267,6 +334,106 @@ export async function commitSnapshotAtomically(params: {
   }
 
   const snapshotId = `snap_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+
+  // Package C firstObservedAt continuation (design sec.2.4 / C-5): when the
+  // same (variant, field, value, source, upstreamKey) was already present in
+  // the current active snapshot, its first-observation time is carried over;
+  // only genuinely new quotes start a new first-observation at this fetch.
+  const creatorById = new Map(bundle.creators.map((c) => [c.id, c]));
+  const releaseById = new Map(bundle.releases.map((r) => [r.id, r]));
+  const variantById = new Map(bundle.variants.map((v) => [v.id, v]));
+  const prevByVariant = new Map<
+    string,
+    { fieldSourcesJson: string | null; prices: Record<string, number | null> }
+  >();
+  if (activeSnapshot) {
+    const prevRows = await db
+      .select()
+      .from(benchmarkMeasurements)
+      .where(eq(benchmarkMeasurements.snapshotId, activeSnapshot.id));
+    for (const pr of prevRows) {
+      prevByVariant.set(pr.variantId, {
+        fieldSourcesJson: pr.fieldSourcesJson,
+        prices: {
+          input: pr.inputPricePerMillion,
+          output: pr.outputPricePerMillion,
+          cacheRead: pr.cacheReadPricePerMillion,
+          cacheWrite: pr.cacheWritePricePerMillion,
+          contextWindow: pr.frozenContextWindow,
+        },
+      });
+    }
+  }
+  const priceOf = (
+    m: NormalizedBundle["measurements"][number],
+    field: string
+  ): number | null => {
+    switch (field) {
+      case "input":
+        return m.inputPricePerMillion;
+      case "output":
+        return m.outputPricePerMillion;
+      case "cacheRead":
+        return m.cacheReadPricePerMillion;
+      case "cacheWrite":
+        return m.cacheWritePricePerMillion;
+      case "contextWindow":
+        return variantById.get(m.variantId)
+          ? (releaseById.get(variantById.get(m.variantId)!.modelReleaseId)
+              ?.contextWindow ?? null)
+          : null;
+      default:
+        return null;
+    }
+  };
+  const adjustedProvenance = new Map<
+    string,
+    { json: string; firstObservedAt: string | null }
+  >();
+  for (const m of bundle.measurements) {
+    const extra = extras.get(m.variantId);
+    let prov: PricingProvenance = {};
+    if (extra?.fieldSourcesJson) {
+      try {
+        prov = JSON.parse(extra.fieldSourcesJson) as PricingProvenance;
+      } catch {
+        prov = { ...(m.fieldSources ?? {}) };
+      }
+    } else if (m.fieldSources) {
+      prov = { ...m.fieldSources };
+    }
+    const prev = prevByVariant.get(m.variantId);
+    let prevProv: PricingProvenance = {};
+    if (prev?.fieldSourcesJson) {
+      try {
+        prevProv = JSON.parse(prev.fieldSourcesJson) as PricingProvenance;
+      } catch {
+        prevProv = {};
+      }
+    }
+    let earliest: string | null = null;
+    for (const [field, entry] of Object.entries(prov)) {
+      if (!entry) continue;
+      const prevEntry = prevProv[field as keyof PricingProvenance];
+      const sameQuote =
+        prevEntry &&
+        prevEntry.source === entry.source &&
+        prevEntry.upstreamKey === entry.upstreamKey &&
+        prev !== undefined &&
+        prev.prices[field] !== undefined &&
+        prev.prices[field] === priceOf(m, field);
+      entry.firstObservedAt = sameQuote
+        ? (prevEntry.firstObservedAt ?? fetchedAt)
+        : (entry.firstObservedAt ?? fetchedAt);
+      if (!earliest || entry.firstObservedAt < earliest) {
+        earliest = entry.firstObservedAt;
+      }
+    }
+    adjustedProvenance.set(m.variantId, {
+      json: JSON.stringify(prov),
+      firstObservedAt: earliest,
+    });
+  }
 
   await db.transaction(async (tx) => {
     for (const c of bundle.creators) {
@@ -336,8 +503,16 @@ export async function commitSnapshotAtomically(params: {
 
     for (const m of bundle.measurements) {
       const extra = extras.get(m.variantId);
+      const variant = variantById.get(m.variantId);
+      const release = variant
+        ? releaseById.get(variant.modelReleaseId)
+        : undefined;
+      const creator = release ? creatorById.get(release.creatorId) : undefined;
+      const adj = adjustedProvenance.get(m.variantId);
+      const { fieldSources: _fieldSources, ...measurementCore } = m;
+      void _fieldSources;
       await tx.insert(benchmarkMeasurements).values({
-        ...m,
+        ...measurementCore,
         id: `${m.id}_${snapshotId}`,
         snapshotId,
         agentUsageJson: extra?.agentUsageJson ?? null,
@@ -346,6 +521,20 @@ export async function commitSnapshotAtomically(params: {
         dataSourceType: extra?.dataSourceType ?? "unavailable",
         dataSourcesJson: extra?.dataSourcesJson ?? "[]",
         dataUpdatedAt: extra?.dataUpdatedAt ?? fetchedAt,
+        // Package B: frozen metadata written from this same normalization
+        // result, so later dimension renames never rewrite history.
+        frozenCreatorName: creator?.name ?? null,
+        frozenCreatorSlug: creator?.slug ?? null,
+        frozenReleaseName: release?.name ?? null,
+        frozenReleaseDate: release?.releaseDate ?? null,
+        frozenContextWindow: release?.contextWindow ?? null,
+        frozenDisplayName: variant?.displayName ?? null,
+        frozenEffortNormalized: variant?.effortNormalized ?? null,
+        legacyBackfill: 0,
+        // Package C: per-field provenance + quality evidence.
+        fieldSourcesJson: adj?.json ?? extra?.fieldSourcesJson ?? null,
+        qualityEvidenceJson: extra?.qualityEvidenceJson ?? null,
+        firstObservedAt: adj?.firstObservedAt ?? null,
       });
     }
 
@@ -368,6 +557,12 @@ async function buildBundleFromExistingLiveSnapshot(
 ): Promise<{ bundle: NormalizedBundle; indexVersion: string; source: string } | null> {
   const { snapshot, rows } = await getActiveMeasurements();
   if (!snapshot || snapshot.isDemo || rows.length === 0) return null;
+  // Carry frozen provenance/first-observation through the no-key reuse path;
+  // reuse must not re-date or re-attribute existing quotes.
+  const reconciliation = await getSnapshotReconciliation(snapshot.id);
+  const provenanceByVariant = new Map(
+    reconciliation.map((r) => [r.variantId, r.fieldSources])
+  );
 
   const creatorMap = new Map<string, NormalizedBundle["creators"][number]>();
   const releaseMap = new Map<string, NormalizedBundle["releases"][number]>();
@@ -436,6 +631,9 @@ async function buildBundleFromExistingLiveSnapshot(
       measuredAt: r.measuredAt,
       fetchedAt,
       pricingSource: r.pricingSource,
+      fieldSources:
+        (provenanceByVariant.get(r.variantId) as PricingProvenance | undefined) ??
+        undefined,
     });
   }
 
@@ -459,7 +657,7 @@ export async function runSyncJob(options?: {
   openRouterFetchImpl?: typeof fetch;
   liteLLMFetchImpl?: typeof fetch;
 }): Promise<SyncRunResult> {
-  await ensureSchema();
+  await assertSchemaCompatible();
   const db = getDb();
   const owner = `sync_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
 

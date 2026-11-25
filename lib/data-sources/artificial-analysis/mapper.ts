@@ -1,4 +1,6 @@
 import type { AAModelItem } from "./schema";
+import type { PricingProvenance } from "@/lib/agent-cost/types";
+import { makeProvenance } from "@/lib/data-sources/model-mappings";
 import { resolveCreator, type ResolvedCreator } from "@/lib/normalization/creators";
 import {
   extractModelFamily,
@@ -53,6 +55,7 @@ export interface NormalizedBundle {
     measuredAt: string | null;
     fetchedAt: string;
     pricingSource: string | null;
+    fieldSources?: PricingProvenance;
   }>;
   rejectedCount: number;
 }
@@ -67,6 +70,17 @@ function slugify(str: string): string {
 
 function isFiniteOrNull(val: unknown): number | null {
   return typeof val === "number" && Number.isFinite(val) ? val : null;
+}
+
+/**
+ * Package C: AA prices must be finite and non-negative. Negative or
+ * non-finite values are rejected (treated as missing, never written as 0);
+ * a genuine zero price is valid and preserved.
+ */
+function validPriceOrNull(val: unknown): number | null {
+  return typeof val === "number" && Number.isFinite(val) && val >= 0
+    ? val
+    : null;
 }
 
 export function mapAAModelsToNormalized(params: {
@@ -145,14 +159,33 @@ export function mapAAModelsToNormalized(params: {
       isGrouped: parsedEffort.isGrouped,
     });
 
-    const inputPricePerMillion = isFiniteOrNull(item.pricing?.price_1m_input_tokens);
-    const outputPricePerMillion = isFiniteOrNull(item.pricing?.price_1m_output_tokens);
-    const cacheReadPricePerMillion = isFiniteOrNull(
+    const inputPricePerMillion = validPriceOrNull(item.pricing?.price_1m_input_tokens);
+    const outputPricePerMillion = validPriceOrNull(item.pricing?.price_1m_output_tokens);
+    const cacheReadPricePerMillion = validPriceOrNull(
       item.pricing?.price_1m_cache_read_tokens
     );
-    const cacheWritePricePerMillion = isFiniteOrNull(
+    const cacheWritePricePerMillion = validPriceOrNull(
       item.pricing?.price_1m_cache_write_tokens
     );
+
+    // Per-field provenance: AA has no trusted quote-time contract, so
+    // observedAt stays null (never filled with sync or release dates).
+    const fieldSources: PricingProvenance = {};
+    const aaProv = (key: string) =>
+      makeProvenance({ source, upstreamKey: key, observedAt: null });
+    if (inputPricePerMillion !== null) fieldSources.input = aaProv(item.id);
+    if (outputPricePerMillion !== null) fieldSources.output = aaProv(item.id);
+    if (cacheReadPricePerMillion !== null) fieldSources.cacheRead = aaProv(item.id);
+    if (cacheWritePricePerMillion !== null) fieldSources.cacheWrite = aaProv(item.id);
+    if (isFiniteOrNull(item.context_window) !== null) {
+      fieldSources.contextWindow = makeProvenance({
+        source,
+        upstreamKey: item.id,
+        currency: null,
+        unit: "tokens",
+        observedAt: null,
+      });
+    }
 
     const outputTokensPerSecond =
       isFiniteOrNull(item.performance_v3?.median_output_tokens_per_second) ??
@@ -184,7 +217,13 @@ export function mapAAModelsToNormalized(params: {
       measuredAt: item.release_date ?? null,
       fetchedAt,
       pricingSource:
-        inputPricePerMillion !== null || outputPricePerMillion !== null ? source : null,
+        inputPricePerMillion !== null ||
+        outputPricePerMillion !== null ||
+        cacheReadPricePerMillion !== null ||
+        cacheWritePricePerMillion !== null
+          ? source
+          : null,
+      fieldSources,
     });
   }
 

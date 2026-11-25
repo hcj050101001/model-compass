@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { StandardizedModelCostRecord } from "@/lib/agent-cost/types";
@@ -22,6 +23,22 @@ export function toStandardizedRecord(row: MeasurementRow): StandardizedModelCost
     agent_cost: row.agentCost,
     data_quality: row.dataQuality,
   };
+}
+
+/**
+ * Package B export-summary check: recomputes a deterministic summary from
+ * rows re-read from the database (frozen metadata), so a later dimension
+ * rename can be proven not to change the exported summary. This does not
+ * change the export file layout (byte-level immutability is Package E).
+ */
+export function computeStandardizedSummary(rows: MeasurementRow[]): string {
+  const records = rows
+    .map(toStandardizedRecord)
+    .sort((a, b) => a.model_id.localeCompare(b.model_id));
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify(records))
+    .digest("hex");
 }
 
 export function exportStandardizedSnapshotFiles(params: {
