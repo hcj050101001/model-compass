@@ -6,6 +6,7 @@ const PUBLIC_PATHS = new Set([
   "/login",
   "/api/auth/logout",
   "/api/health",
+  "/api/ready",
 ]);
 
 export async function middleware(request: NextRequest) {

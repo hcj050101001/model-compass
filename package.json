@@ -14,7 +14,9 @@
     "test:watch": "vitest",
     "db:migrate": "tsx lib/database/migrate.ts",
     "seed:demo": "tsx scripts/seed-demo.ts",
-    "sync:data": "tsx scripts/sync-data.ts"
+    "sync:data": "tsx scripts/sync-data.ts",
+    "preflight": "tsx scripts/preflight.ts",
+    "snapshot:verify": "tsx scripts/validate-snapshot.ts"
   },
   "dependencies": {
     "@libsql/client": "^0.14.0",

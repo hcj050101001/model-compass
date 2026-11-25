@@ -212,6 +212,7 @@ export interface MigrationDefinition {
  *   2 = frozen release metadata + legacy backfill + single-active constraint (Package B)
  *   3 = per-field pricing provenance + quality evidence columns (Package C)
  *   4 = per-snapshot multi-turn template version (Package D)
+ *   5 = publication record + sync-job provenance columns (Package E)
  */
 export const MIGRATIONS: MigrationDefinition[] = [
   {
@@ -299,6 +300,28 @@ export const MIGRATIONS: MigrationDefinition[] = [
     name: "snapshot-template-version",
     apply: async (tx) => {
       await addColumnIfMissing(tx, "data_snapshots", "template_version", "TEXT");
+    },
+  },
+  {
+    version: 5,
+    name: "publication-record-and-sync-job-provenance",
+    apply: async (tx) => {
+      // Publication record columns on data_snapshots (Package E): set only
+      // by the activation transaction / immutable publication path.
+      for (const col of [
+        "published_at",
+        "file_generated_at",
+        "source_data_at",
+        "export_sha256",
+        "export_path",
+        "last_verified_fetch_at",
+      ]) {
+        await addColumnIfMissing(tx, "data_snapshots", col, "TEXT");
+      }
+      // Structured provenance columns on sync_jobs (Package E).
+      for (const col of ["reason_code", "owner", "snapshot_id"]) {
+        await addColumnIfMissing(tx, "sync_jobs", col, "TEXT");
+      }
     },
   },
 ];

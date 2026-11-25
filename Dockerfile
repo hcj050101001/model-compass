@@ -12,6 +12,33 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN NODE_OPTIONS="--max-old-space-size=1536" npm run build
 
+# Worker image (Package F): production dependencies only, installed at
+# build time — the running container never downloads packages. It carries
+# the local CLI entry points (db:migrate, preflight, sync:data,
+# snapshot:verify) and the single production scheduler.
+FROM base AS worker-deps
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev
+
+FROM base AS worker
+WORKDIR /app
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+
+RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
+RUN mkdir -p /app/data && chown -R nextjs:nodejs /app/data
+
+COPY --from=worker-deps /app/node_modules ./node_modules
+COPY package.json tsconfig.json ./
+COPY scripts ./scripts
+COPY lib ./lib
+COPY config ./config
+
+USER nextjs
+
+CMD ["node", "--import", "tsx", "scripts/sync-worker.ts"]
+
 FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production

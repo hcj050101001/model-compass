@@ -46,12 +46,52 @@ export function computeStandardizedSummary(rows: MeasurementRow[]): string {
     .digest("hex");
 }
 
-export function exportStandardizedSnapshotFiles(params: {
+/** Runtime data root; the publication files and the DB share one volume. */
+export function getDataDir(): string {
+  const override = process.env.MODEL_COMPASS_DATA_DIR;
+  return override && override.trim().length > 0
+    ? path.resolve(override)
+    : path.resolve(process.cwd(), "data");
+}
+
+export function sha256Hex(bytes: string | Buffer): string {
+  return crypto.createHash("sha256").update(bytes).digest("hex");
+}
+
+export interface StandardizedExportPayload {
+  schema_version: string;
+  snapshot_id: string | null;
+  generated_at: string;
+  fetched_at: string | null;
+  source_data_at: string | null;
+  index_version: string;
+  is_demo: boolean;
+  model_count: number;
+  pareto_frontiers: {
+    real_rasc_model_ids: string[];
+    estimated_eac_model_ids: string[];
+  };
+  cost_metadata: {
+    snapshot_id: string | null;
+    cost_mode: string;
+    cost_unit: string;
+    task_profile: string;
+    template_version: string;
+    legacy_template_version: string;
+    candidate_scope: string;
+  };
+  models: StandardizedModelCostRecord[];
+}
+
+export function buildStandardizedExportPayload(params: {
   rows: MeasurementRow[];
   indexVersion: string;
   generatedAt: string;
   isDemo: boolean;
-}): { mainPath: string; historyPath: string } {
+  snapshotId?: string | null;
+  fetchedAt?: string | null;
+  sourceDataAt?: string | null;
+}): StandardizedExportPayload {
   const { rows, indexVersion, generatedAt, isDemo } = params;
   const records = rows.map(toStandardizedRecord);
 
@@ -102,11 +142,13 @@ export function exportStandardizedSnapshotFiles(params: {
     { indexVersion }
   );
 
-  const snapshotId = rows[0]?.snapshotId ?? null;
-  const payload = {
+  const snapshotId = params.snapshotId ?? rows[0]?.snapshotId ?? null;
+  return {
     schema_version: "2.0.0",
-    generated_at: generatedAt,
     snapshot_id: snapshotId,
+    generated_at: generatedAt,
+    fetched_at: params.fetchedAt ?? null,
+    source_data_at: params.sourceDataAt ?? null,
     index_version: indexVersion,
     is_demo: isDemo,
     model_count: records.length,
@@ -129,18 +171,131 @@ export function exportStandardizedSnapshotFiles(params: {
     },
     models: records,
   };
+}
 
-  const dataDir = path.resolve(process.cwd(), "data");
-  const historyDir = path.join(dataDir, "history");
-  fs.mkdirSync(historyDir, { recursive: true });
+function fsyncDir(dir: string): void {
+  const fd = fs.openSync(dir, "r");
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 
-  const mainPath = path.join(dataDir, "standardized-models.json");
-  const dateTag = generatedAt.slice(0, 10);
-  const historyPath = path.join(historyDir, `${dateTag}.json`);
+/**
+ * Write bytes to `dir/fileName` atomically: exclusive temp file in the same
+ * directory, fsync, rename over the target, fsync the directory. A crash at
+ * any point leaves either the old complete file or the new complete file.
+ */
+export function writeFileAtomically(
+  dir: string,
+  fileName: string,
+  bytes: string
+): string {
+  fs.mkdirSync(dir, { recursive: true });
+  const target = path.join(dir, fileName);
+  const tmp = path.join(
+    dir,
+    `.${fileName}.${crypto.randomBytes(6).toString("hex")}.tmp`
+  );
+  const fd = fs.openSync(tmp, "wx");
+  try {
+    fs.writeFileSync(fd, bytes, "utf8");
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, target);
+  fsyncDir(dir);
+  return target;
+}
 
-  const serialized = JSON.stringify(payload, null, 2);
-  fs.writeFileSync(mainPath, serialized, "utf8");
-  fs.writeFileSync(historyPath, serialized, "utf8");
+export interface PublicationFile {
+  /** Path relative to the data dir, registered in the DB publication record. */
+  relativePath: string;
+  absolutePath: string;
+  sha256: string;
+  serialized: string;
+}
 
+/**
+ * Write the immutable per-snapshot publication file
+ * (`snapshots/<snapshotId>.json`). If the file already exists it is reused
+ * only when its bytes hash to the same SHA-256; a digest conflict fails
+ * closed instead of overwriting a published version.
+ */
+export function writeImmutablePublicationFile(params: {
+  snapshotId: string;
+  payload: StandardizedExportPayload;
+}): PublicationFile {
+  const { snapshotId } = params;
+  if (!/^[A-Za-z0-9_-]+$/.test(snapshotId)) {
+    throw new Error(`Unsafe snapshot id for publication path: ${snapshotId}`);
+  }
+  const serialized = JSON.stringify(params.payload, null, 2);
+  const sha256 = sha256Hex(serialized);
+  const relativePath = `snapshots/${snapshotId}.json`;
+  const absolutePath = path.join(getDataDir(), relativePath);
+
+  if (fs.existsSync(absolutePath)) {
+    const existing = fs.readFileSync(absolutePath, "utf8");
+    if (sha256Hex(existing) !== sha256) {
+      throw new Error(
+        `Publication file for snapshot ${snapshotId} already exists with a different digest; refusing to overwrite an immutable version.`
+      );
+    }
+    return { relativePath, absolutePath, sha256, serialized: existing };
+  }
+
+  writeFileAtomically(path.dirname(absolutePath), `${snapshotId}.json`, serialized);
+  return { relativePath, absolutePath, sha256, serialized };
+}
+
+/** Read a registered publication file by its data-dir-relative path. */
+export function readPublicationFile(relativePath: string): string | null {
+  const dataDir = getDataDir();
+  const absolute = path.resolve(dataDir, relativePath);
+  if (!absolute.startsWith(dataDir + path.sep)) return null;
+  try {
+    return fs.readFileSync(absolute, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Copy already-verified publication bytes to the fixed distribution paths
+ * (`standardized-models.json` and `history/<UTC date>.json`) without
+ * re-serialization. Idempotent: safe to re-run as a repair step.
+ */
+export function writeDistributionCopies(params: {
+  serialized: string;
+  dateTag: string;
+}): { mainPath: string; historyPath: string } {
+  const dataDir = getDataDir();
+  const mainPath = writeFileAtomically(
+    dataDir,
+    "standardized-models.json",
+    params.serialized
+  );
+  const historyPath = writeFileAtomically(
+    path.join(dataDir, "history"),
+    `${params.dateTag}.json`,
+    params.serialized
+  );
   return { mainPath, historyPath };
+}
+
+export function exportStandardizedSnapshotFiles(params: {
+  rows: MeasurementRow[];
+  indexVersion: string;
+  generatedAt: string;
+  isDemo: boolean;
+}): { mainPath: string; historyPath: string } {
+  const payload = buildStandardizedExportPayload(params);
+  const serialized = JSON.stringify(payload, null, 2);
+  return writeDistributionCopies({
+    serialized,
+    dateTag: params.generatedAt.slice(0, 10),
+  });
 }
