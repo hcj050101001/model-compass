@@ -1,6 +1,6 @@
 # Deployment Guide
 
-## Option A: Systemd + Caddy (Bare-Metal Linux)
+## Option A: Bare-Metal Linux + Caddy (no systemd units ship with this repository)
 
 1. Configure `.env` in `/home/ubuntu/apps/llm-frontier/.env` (`chmod 600`):
    - Set `PRIVATE_MODE=true`, `ACCESS_PASSWORD`, `ADMIN_TOKEN`, `SESSION_SECRET`.
@@ -13,7 +13,7 @@
    npm run db:migrate
    npm run seed:demo # or npm run sync:data with live AA_API_KEY
    ```
-3. Run via systemd (`llm-frontier.service`) bound to `127.0.0.1:3100` and schedule hourly sync via `llm-frontier-sync.timer`.
+3. Run the web service bound to `127.0.0.1:3100` with `npm run start`. No systemd units ship with this repository: if you manage the process with systemd, cron, or another supervisor, write that unit yourself. Schedule data sync from the operator environment with the CLI — the CLI does not auto-load `.env`, so load it explicitly first (`set -a; . ./.env; set +a; npm run sync:data`) — or through the protected server-side admin API; the settings page only displays sync status and never accepts an admin token in the browser. Under Docker Compose the two services are named `web` and `sync-worker`, and the sync interval is driven by `DATA_SYNC_INTERVAL_MINUTES` (the same value the status page displays).
 4. Reverse proxy in Caddy:
    ```caddy
    llm.nianhub.com {

@@ -569,7 +569,7 @@ export function DashboardClient({
                       C_eff = AvgContext + 4 × AvgOutputPerTurn ｜ V_in = N × AvgContext
                     </div>
                     <p className="mt-1 text-text-muted">
-                      其中输出单价通常约为输入的 4 倍，故输出权重取 4；轻量（C_eff &lt; 44K）、标准（&lt; 120K）、重度（≥ 120K），同时覆盖编程开发、科研文献、长文档分析与多步检索等所有任务。
+                      其中输出单价通常约为输入的 4 倍，故输出权重取 4；分档采用双门槛且均为严格小于：轻量需平均上下文 &lt; 36K 且 C_eff &lt; 44K，标准需平均上下文 &lt; 110K 且 C_eff &lt; 120K，其余为重度；任务档位也可以在界面上手动选择，同时覆盖编程开发、科研文献、长文档分析与多步检索等所有任务。
                     </p>
                   </div>
 
@@ -655,7 +655,7 @@ export function DashboardClient({
                       C_eff = AvgContext + 4 × AvgOutputPerTurn ｜ V_in = N × AvgContext
                     </div>
                     <p className="mt-1 text-text-muted">
-                      Output tokens are weighted 4× to reflect typical API price ratios. Light (C_eff &lt; 44K), Standard (&lt; 120K), and Heavy (≥ 120K) apply uniformly across coding, scientific research, analysis, and general agent tasks.
+                      Output tokens are weighted 4× to reflect typical API price ratios. Tiers use dual thresholds, both strictly less-than: Light requires average context &lt; 36K and C_eff &lt; 44K, Standard requires average context &lt; 110K and C_eff &lt; 120K, and everything else is Heavy; a task profile can also be selected manually in the UI. This applies uniformly across coding, scientific research, analysis, and general agent tasks.
                     </p>
                   </div>
 

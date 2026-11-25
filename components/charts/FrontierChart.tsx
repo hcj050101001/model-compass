@@ -47,6 +47,16 @@ function clamp(val: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, val));
 }
 
+// Tooltip colors come from upstream data (creator color); only constrained
+// hex values may reach a style, anything else falls back to a fixed color.
+const SAFE_HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+
+function safeTooltipColor(value: unknown, fallback: string): string {
+  return typeof value === "string" && SAFE_HEX_COLOR.test(value)
+    ? value
+    : fallback;
+}
+
 function clampViewport(v: Viewport): Viewport {
   const uSpan = clamp(v.uMax - v.uMin, MIN_U_SPAN, MAX_U_SPAN);
   let uMin = v.uMin;
@@ -808,7 +818,35 @@ export function FrontierChart({
           const visibleItems = nearby.slice(0, isCompact ? 3 : 6);
           const extraCount = nearby.length - visibleItems.length;
 
-          const blocks = visibleItems.map((item, idx) => {
+          // Package G (AC-G3): build the tooltip as a DOM tree and write
+          // every external field (release name, creator name, effort tier)
+          // through textContent, so values containing < > & " render as
+          // literal plain text. No external field is concatenated into
+          // HTML, CSS, or a URL; the only color taken from data is the
+          // creator color, constrained to a hex value by safeTooltipColor.
+          const container = document.createElement("div");
+          container.style.minWidth = `${isCompact ? 175 : 220}px`;
+          container.style.maxWidth = `${isCompact ? 230 : 320}px`;
+          container.style.lineHeight = "1.5";
+
+          const mutedColor = "#94a3b8";
+          const addRow = (
+            grid: HTMLDivElement,
+            label: string,
+            value: string,
+            valueColor?: string,
+            bold = false
+          ) => {
+            const labelEl = document.createElement("span");
+            labelEl.style.color = mutedColor;
+            labelEl.textContent = `${label}:`;
+            const valueEl = document.createElement(bold ? "b" : "span");
+            if (valueColor) valueEl.style.color = valueColor;
+            valueEl.textContent = value;
+            grid.append(labelEl, valueEl);
+          };
+
+          visibleItems.forEach((item, idx) => {
             const r = item.row;
             const creatorDisplay = getCreatorDisplayName(
               r.creatorSlug,
@@ -821,45 +859,98 @@ export function FrontierChart({
                 ? `${(r.contextWindow / 1_000_000).toFixed(1)}M`
                 : `${Math.round(r.contextWindow / 1000)}K`
               : "128K";
-            const badge = item.isBestValue
-              ? `<span style="margin-left:6px;font-size:10px;color:#38bdf8;font-weight:600">★</span>`
-              : "";
-            const borderTop =
-              idx > 0
-                ? `border-top:1px solid ${dividerColor};margin-top:8px;padding-top:8px;`
-                : "";
-            return `
-              <div style="${borderTop}">
-                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:3px">
-                  <strong style="font-size:12.5px">${r.releaseName}${badge}</strong>
-                  <span style="color:${r.creatorColor};font-weight:600;font-size:11px">${creatorDisplay}</span>
-                </div>
-                <div style="display:grid;grid-template-columns:1fr auto;gap:2px 12px;font-size:11px">
-                  <span style="color:#94a3b8">${t("simpleEffortLabel")}:</span>
-                  <b style="color:#38bdf8">${r.effortNormalized ?? "Standard"}</b>
-                  <span style="color:#94a3b8">${scoreLabel}:</span>
-                  <b>${formatScore(r.intelligenceScore)}</b>
-                  <span style="color:#94a3b8">${locale === "zh" ? "预估单次花费" : "Est. Task Cost"}:</span>
-                  <b style="color:#34d399">${formatUsd(dev?.totalUsd)}</b>
-                  <span style="color:#94a3b8">${locale === "zh" ? "输入 / 输出 ($/1M)" : "Input / Output ($/1M)"}:</span>
-                  <span>${formatUsd(r.inputPricePerMillion)} / ${formatUsd(r.outputPricePerMillion)}</span>
-                  <span style="color:#94a3b8">${locale === "zh" ? "缓存读 / 写 ($/1M)" : "Cache Read / Write ($/1M)"}:</span>
-                  <span>${formatUsd(r.cacheReadPricePerMillion)} / ${formatUsd(r.cacheWritePricePerMillion)}</span>
-                  <span style="color:#94a3b8">${locale === "zh" ? "缓存省下 / 压缩次数" : "Cache Saved / Compacts"}:</span>
-                  <span>${formatUsd(dev?.cacheSavingsUsd)} / ${dev?.compactionCount ?? 0}x</span>
-                  <span style="color:#94a3b8">${t("simpleColContext")} / ${t("simpleColSpeed")}:</span>
-                  <span>${ctxLabel} · ${formatSpeed(r.outputTokensPerSecond)}</span>
-                </div>
-              </div>
-            `;
+
+            const block = document.createElement("div");
+            if (idx > 0) {
+              block.style.borderTop = `1px solid ${dividerColor}`;
+              block.style.marginTop = "8px";
+              block.style.paddingTop = "8px";
+            }
+
+            const head = document.createElement("div");
+            head.style.display = "flex";
+            head.style.alignItems = "center";
+            head.style.justifyContent = "space-between";
+            head.style.gap = "10px";
+            head.style.marginBottom = "3px";
+
+            const title = document.createElement("strong");
+            title.style.fontSize = "12.5px";
+            title.textContent = r.releaseName;
+            if (item.isBestValue) {
+              const badge = document.createElement("span");
+              badge.style.marginLeft = "6px";
+              badge.style.fontSize = "10px";
+              badge.style.color = "#38bdf8";
+              badge.style.fontWeight = "600";
+              badge.textContent = "★";
+              title.appendChild(badge);
+            }
+
+            const creator = document.createElement("span");
+            creator.style.color = safeTooltipColor(r.creatorColor, mutedColor);
+            creator.style.fontWeight = "600";
+            creator.style.fontSize = "11px";
+            creator.textContent = creatorDisplay;
+
+            head.append(title, creator);
+
+            const grid = document.createElement("div");
+            grid.style.display = "grid";
+            grid.style.gridTemplateColumns = "1fr auto";
+            grid.style.gap = "2px 12px";
+            grid.style.fontSize = "11px";
+
+            addRow(
+              grid,
+              t("simpleEffortLabel"),
+              r.effortNormalized ?? "Standard",
+              "#38bdf8",
+              true
+            );
+            addRow(grid, scoreLabel, formatScore(r.intelligenceScore), undefined, true);
+            addRow(
+              grid,
+              locale === "zh" ? "预估单次花费" : "Est. Task Cost",
+              formatUsd(dev?.totalUsd),
+              "#34d399",
+              true
+            );
+            addRow(
+              grid,
+              locale === "zh" ? "输入 / 输出 ($/1M)" : "Input / Output ($/1M)",
+              `${formatUsd(r.inputPricePerMillion)} / ${formatUsd(r.outputPricePerMillion)}`
+            );
+            addRow(
+              grid,
+              locale === "zh" ? "缓存读 / 写 ($/1M)" : "Cache Read / Write ($/1M)",
+              `${formatUsd(r.cacheReadPricePerMillion)} / ${formatUsd(r.cacheWritePricePerMillion)}`
+            );
+            addRow(
+              grid,
+              locale === "zh" ? "缓存省下 / 压缩次数" : "Cache Saved / Compacts",
+              `${formatUsd(dev?.cacheSavingsUsd)} / ${dev?.compactionCount ?? 0}x`
+            );
+            addRow(
+              grid,
+              `${t("simpleColContext")} / ${t("simpleColSpeed")}`,
+              `${ctxLabel} · ${formatSpeed(r.outputTokensPerSecond)}`
+            );
+
+            block.append(head, grid);
+            container.appendChild(block);
           });
 
-          const extraFooter =
-            extraCount > 0
-              ? `<div style="margin-top:6px;font-size:10px;color:#94a3b8">+${extraCount} ...</div>`
-              : "";
+          if (extraCount > 0) {
+            const footer = document.createElement("div");
+            footer.style.marginTop = "6px";
+            footer.style.fontSize = "10px";
+            footer.style.color = mutedColor;
+            footer.textContent = `+${extraCount} ...`;
+            container.appendChild(footer);
+          }
 
-          return `<div style="min-width:${isCompact ? 175 : 220}px;max-width:${isCompact ? 230 : 320}px;line-height:1.5">${blocks.join("")}${extraFooter}</div>`;
+          return container;
         },
       },
       xAxis: {

@@ -37,7 +37,7 @@ export function Header({
 
   return (
     <header className="sticky top-0 z-30 border-b border-border bg-bg-secondary/85 pt-[env(safe-area-inset-top)] backdrop-blur-md">
-      <div className="mx-auto flex max-w-5xl items-center justify-between gap-2.5 px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
+      <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-2.5 px-3 py-2.5 sm:flex-nowrap sm:gap-3 sm:px-4 sm:py-3">
         <Link href="/" className="flex min-w-0 items-center gap-2.5">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-accent/25 to-accent/10 text-accent ring-1 ring-accent/30">
             <Compass className="h-4 w-4" />
@@ -56,6 +56,30 @@ export function Header({
             </p>
           </div>
         </Link>
+
+        <nav
+          aria-label="Primary"
+          className="order-3 flex w-full shrink-0 items-center gap-1 text-xs sm:order-none sm:w-auto sm:gap-1.5"
+        >
+          <Link
+            href="/"
+            className="flex h-9 items-center rounded-lg px-2 font-medium text-text-secondary transition hover:text-text-primary active:scale-95 sm:h-8 sm:px-2.5"
+          >
+            {t("navDashboard")}
+          </Link>
+          <Link
+            href="/compare"
+            className="flex h-9 items-center rounded-lg px-2 font-medium text-text-secondary transition hover:text-text-primary active:scale-95 sm:h-8 sm:px-2.5"
+          >
+            {t("navCompare")}
+          </Link>
+          <Link
+            href="/settings"
+            className="flex h-9 items-center rounded-lg px-2 font-medium text-text-secondary transition hover:text-text-primary active:scale-95 sm:h-8 sm:px-2.5"
+          >
+            {t("navSettings")}
+          </Link>
+        </nav>
 
         <div className="flex shrink-0 items-center gap-1.5 text-xs sm:gap-2">
           <button
