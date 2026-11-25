@@ -1,13 +1,22 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { setTimeout as wait } from "node:timers/promises";
-import { expect, it } from "vitest";
+import { promisify } from "node:util";
+import { beforeAll, expect, it } from "vitest";
 
-const hasBuild = existsSync(".next/BUILD_ID");
+beforeAll(async () => {
+  if (existsSync(".next/BUILD_ID")) return;
+  if (process.env.MODEL_COMPASS_TEST_PRODUCTION === "1") {
+    throw new Error("Production build missing. Run npm run test:production.");
+  }
+  await promisify(execFile)("npm", ["run", "build"], {
+    env: { ...process.env, NODE_ENV: "production" },
+    timeout: 240_000,
+  });
+}, 245_000);
 
-// Run after npm run build. The flag makes a missing build fail in verification runs.
-it.skipIf(!hasBuild && process.env.MODEL_COMPASS_TEST_PRODUCTION !== "1")(
+it(
   "emits a relative Location through next start with forwarded proto and host",
   async () => {
     const server = spawn(process.execPath, [

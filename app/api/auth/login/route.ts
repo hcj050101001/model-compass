@@ -7,10 +7,9 @@ import {
   sessionCookieOptions,
 } from "@/lib/auth";
 import { getAuthConfigError, isPrivateMode } from "@/lib/auth-config";
-import { createCredentialRateLimiter, credentialsMatch, delayFailedCredential } from "@/lib/credentials-match";
+import { credentialsMatch, delayFailedCredential } from "@/lib/credentials-match";
 
 const MAX_LOGIN_BODY_BYTES = 4 * 1024;
-const checkAttempt = createCredentialRateLimiter();
 const LoginSchema = z.object({
   password: z.string().min(1),
 });
@@ -56,17 +55,8 @@ export async function POST(request: Request) {
   }
 
   const expectedPassword = process.env.ACCESS_PASSWORD;
-  const attempt = checkAttempt(request.headers, () =>
-    !!expectedPassword && credentialsMatch(parsed.data.password, expectedPassword),
-  );
-  if (attempt.status === "limited") {
-    return NextResponse.json({ error: "Too many authentication attempts" }, {
-      status: 429,
-      headers: { "Retry-After": String(attempt.retryAfter) },
-    });
-  }
-  if (attempt.status === "rejected") {
-    await delayFailedCredential();
+  if (!expectedPassword || !credentialsMatch(parsed.data.password, expectedPassword)) {
+    await delayFailedCredential(request.headers);
     return NextResponse.json({ error: "Invalid access password" }, { status: 401 });
   }
 

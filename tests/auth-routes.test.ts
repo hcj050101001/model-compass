@@ -64,10 +64,21 @@ function signedSession(payload: object): string {
   return `${encoded}.${signature}`;
 }
 
+async function expectCredentialDelay(pending: Promise<Response>, delay: number, status: number) {
+  const completed = vi.fn<(response: Response) => void>();
+  void pending.then(completed);
+  await vi.advanceTimersByTimeAsync(0);
+  await vi.advanceTimersByTimeAsync(delay - 1);
+  expect(completed).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(completed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status }));
+  return pending;
+}
+
 let testTime = Date.now();
 
 beforeEach(() => {
-  // The route limiters retain their window for the lifetime of the module.
+  // Separate tests by more than the shared failure window.
   testTime += 120_000;
   vi.spyOn(Date, "now").mockReturnValue(testTime);
   vi.stubEnv("NODE_ENV", "production");
@@ -77,6 +88,7 @@ beforeEach(() => {
   vi.stubEnv("ACCESS_PASSWORD", password);
   vi.stubEnv("SESSION_SECRET", sessionSecret);
   vi.stubEnv("ADMIN_TOKEN", adminToken);
+  vi.stubEnv("TRUST_PROXY", undefined);
 });
 
 afterEach(() => {
@@ -134,12 +146,18 @@ describe("auth configuration at startup", () => {
     ["SESSION_SECRET", "a-b-c-d-e-f-g-h-i-j-k-l-m-n-o-p-q"],
     ["SESSION_SECRET", "q-w-e-r-t-y-u-i-o-p-a-s-d-f-g-h-j"],
     ["SESSION_SECRET", "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"],
-    ["SESSION_SECRET", "V6*sW+2Q@12345678~pN9!uY=4H#Lj"],
+    ["SESSION_SECRET", "V6*sW+2Q@12345678~pN9!uY=4H#LjX3B"],
     ["ACCESS_PASSWORD", "V6*sW+2Q@zyxwvuts~pN9!uY=4H#Lj"],
-    ["ADMIN_TOKEN", "V6*sW+2Q@89abcdef~pN9!uY=4H#Lj"],
+    ["ADMIN_TOKEN", "V6*sW+2Q@89abcdef~pN9!uY=4H#LjX3B"],
     ["ACCESS_PASSWORD", "V6*sW+2Q@3edc4rfv~pN9!uY=4H#Lj"],
-    ["ADMIN_TOKEN", "V6*sW+2Q@iuytrewq~pN9!uY=4H#Lj"],
+    ["ADMIN_TOKEN", "V6*sW+2Q@iuytrewq~pN9!uY=4H#LjX3B"],
     ["ADMIN_TOKEN", "V6*sW+2Q@3_e d-c4_r f-v~pN9!uY=4H#Lj"],
+    ["SESSION_SECRET", "V6*sW+2Q@ABCDEFGH~pN9!uY=4H#LjX3B"],
+    ["ACCESS_PASSWORD", "V6*sW+2Q@QWERTYUI~pN9!uY=4H#Lj"],
+    ["ADMIN_TOKEN", "V6*sW+2Q@A1B2C3D4E5F6G7H8~pN9!uY=4H#Lj"],
+    ...["9abcdef0", "bcdef012", "f0123456", "xyzabcde", "edcbazyx", "acegikmo"].map(
+      (run) => ["SESSION_SECRET", `V6*sW+2Q@${run}~pN9!uY=4H#LjX3B`],
+    ),
   ])("rejects predictable credential forms in %s (%#)", (name, value) => {
     vi.stubEnv(name, value);
     expect(register).toThrow(startupHalt);
@@ -147,13 +165,49 @@ describe("auth configuration at startup", () => {
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining(name));
   });
 
-  it.each(["1234567", "zyxwvut", "89abcde", "3edc4rf", "iuytrew"])(
+  const generatedSequences = [
+    ["decimal", "0123456789"],
+    ["hexadecimal", "0123456789abcdef"],
+    ["alphabet", "abcdefghijklmnopqrstuvwxyz"],
+    ["keyboard rows", "qwertyuiopasdfghjklzxcvbnm"],
+    ["keyboard columns", "1qaz2wsx3edc4rfv5tgb6yhn7ujm8ik9ol0p"],
+  ].flatMap(([family, ring]) => {
+    const run = (start: number, step: number) => Array.from({ length: 8 }, (_, index) =>
+      ring[(start + step * index + ring.length * 2) % ring.length],
+    );
+    const wrapped = run(ring.length - 2, 1);
+    const filler = "m3p7s9v2";
+    const atStart = (sequence: string) => `${sequence}!~N9uY4HLjX3B@V6sW2Q+g5K8zR`;
+    return [
+      [family, "forward wrap", atStart(wrapped.join(""))],
+      [family, "reverse wrap", atStart(run(1, -1).join(""))],
+      [family, "forward step two", atStart(run(ring.length - 3, 2).join(""))],
+      [family, "reverse step two", atStart(run(2, -2).join(""))],
+      [family, "separated", atStart(wrapped.join("-_ "))],
+      [family, "interleaved in the first track", atStart(wrapped.map((char, i) => char + filler[i]).join(""))],
+      [family, "interleaved in the second track", atStart(wrapped.map((char, i) => filler[i] + char).join(""))],
+      [family, "mixed case", atStart(run(ring.length - 5, 1).map((char, i) => i % 2 ? char.toUpperCase() : char).join(""))],
+      [family, "middle of a credential", `V6*sW+2Q@${wrapped.join("")}~pN9!uY=4H#LjX3B`],
+    ];
+  });
+
+  it.each(generatedSequences)("rejects generated %s sequences (%s)", (_family, _shape, value) => {
+    vi.stubEnv("SESSION_SECRET", value);
+    expect(register).toThrow(startupHalt);
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("SESSION_SECRET"));
+  });
+
+  it.each(["1234567", "zyxwvut", "89abcde", "3edc4rf", "iuytrew", "9abcdef", "xyzabcd", "acegikm"])(
     "accepts a seven-character sequence %s",
     (sequence) => {
       vi.stubEnv("SESSION_SECRET", `V6*sW+2Q@${sequence}~pN9!uY=4H#Lj+3B`);
       expect(register).not.toThrow();
     },
   );
+
+  it("allows independently generated random hexadecimal credentials", () => {
+    expect(register).not.toThrow();
+  });
 
   it("requires both credentials even when public reads are enabled", async () => {
     vi.stubEnv("PRIVATE_MODE", "false");
@@ -281,6 +335,7 @@ describe("viewer access", () => {
     "/login", "/login/", "/login//", "/login/extra", "/login;", "/login%3bparam/extra",
     "/api", "/api?x=1", "/api;param", "/api/auth/logout", "/api/models", "/%61pi/models",
     "/%6cogin", "/%6Cogin/", "/login%2f", "/api%2fmodels",
+    "/login%5cextra", "/api%5cmodels", "/login\\extra", "/api\\models",
   ])(
     "falls back to the homepage for a login or API return path %s",
     (path) => expect(getLoginReturnPath(path)).toBe("/"),
@@ -300,16 +355,8 @@ describe("viewer access", () => {
     vi.stubEnv("ACCESS_PASSWORD", `${password}\uFFFD`);
     vi.useFakeTimers({ toFake: ["setTimeout"] });
     try {
-      for (const value of ["incorrect", password, `${password}\uD800`]) {
-        const completed = vi.fn<(response: Response) => void>();
-        const pending = login(loginRequest(value));
-        void pending.then(completed);
-        await vi.advanceTimersByTimeAsync(0);
-        await vi.advanceTimersByTimeAsync(299);
-        expect(completed).not.toHaveBeenCalled();
-        await vi.advanceTimersByTimeAsync(1);
-        expect(completed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 401 }));
-        const response = await pending;
+      for (const [index, value] of ["incorrect", password, `${password}\uD800`].entries()) {
+        const response = await expectCredentialDelay(login(loginRequest(value)), 300 + 100 * index, 401);
         expect(response.headers.has("set-cookie")).toBe(false);
       }
     } finally {
@@ -368,49 +415,87 @@ describe.each([
 
   afterEach(() => vi.useRealTimers());
 
-  it("counts concurrent failures from the same source before the 300 ms delay", async () => {
+  it("counts concurrent failures by the trusted last hop before any delay completes", async () => {
+    vi.stubEnv("TRUST_PROXY", "true");
     const source = "192.0.2.1";
     const responses = vi.fn<(response: Response) => void>();
-    const pending = Array.from({ length: 6 }, (_, index) =>
+    const pending = Array.from({ length: 5 }, (_, index) =>
       post(request("incorrect", `198.51.100.${index + 1}, ${source}`)).then((response) => {
         responses(response);
         return response;
       }),
     );
+    await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(299);
-    expect(responses).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 429 }));
-    const locked = await post(request(valid, source));
-    expect(locked.status).toBe(429);
-    expect(locked.headers.get("retry-after")).toBe("60");
-    expect(locked.headers.has("set-cookie")).toBe(false);
-    expect(runSyncJob).not.toHaveBeenCalled();
-    expect((await post(request(valid, "192.0.2.2"))).status).toBe(200);
-
-    await vi.advanceTimersByTimeAsync(1);
-    const statuses = (await Promise.all(pending)).map(({ status }) => status);
-    expect(statuses.filter((status) => status === denied)).toHaveLength(5);
-    expect(statuses.filter((status) => status === 429)).toHaveLength(1);
-
-    vi.mocked(Date.now).mockReturnValue(testTime + 59_001);
-    expect((await post(request(valid, source))).headers.get("retry-after")).toBe("1");
+    expect(responses).not.toHaveBeenCalled();
+    for (let completed = 1; completed <= pending.length; completed++) {
+      await vi.advanceTimersByTimeAsync(completed === 1 ? 1 : 100);
+      expect(responses).toHaveBeenCalledTimes(completed);
+      expect(responses).toHaveBeenLastCalledWith(expect.objectContaining({ status: denied }));
+    }
+    await Promise.all(pending);
+    await expectCredentialDelay(post(request("incorrect", `198.51.100.1, 192.0.2.2`)), 300, denied);
+    vi.mocked(Date.now).mockReturnValue(testTime + 59_999);
+    await expectCredentialDelay(post(request("incorrect", source)), 800, denied);
     vi.mocked(Date.now).mockReturnValue(testTime + 60_000);
-    expect((await post(request(valid, source))).status).toBe(200);
+    await expectCredentialDelay(post(request("incorrect", source)), 400, denied);
   });
 
-  it("locks all sources at the global threshold", async () => {
-    const pending = Array.from({ length: 31 }, (_, index) =>
-      post(request("incorrect", `198.51.100.${index + 1}`)),
-    );
-    await vi.advanceTimersByTimeAsync(300);
-    const statuses = (await Promise.all(pending)).map(({ status }) => status);
-    expect(statuses.filter((status) => status === denied)).toHaveLength(30);
-    expect(statuses.filter((status) => status === 429)).toHaveLength(1);
-    const locked = await post(request(valid, "192.0.2.1"));
-    expect(locked.status).toBe(429);
-    expect(locked.headers.get("retry-after")).toBe("60");
-    expect(runSyncJob).not.toHaveBeenCalled();
+  it("accepts valid credentials after five failures without X-Forwarded-For", async () => {
+    for (let index = 0; index < 5; index++) {
+      await expectCredentialDelay(post(request("incorrect")), 300 + 100 * index, denied);
+    }
+    const response = await post(request(valid));
+    expect(response.status).toBe(200);
+    if (post === login) {
+      expect(response.headers.get("set-cookie")).toContain(`${SESSION_COOKIE_NAME}=`);
+    } else {
+      expect(runSyncJob).toHaveBeenCalledExactlyOnceWith({ manual: true });
+    }
+    await expectCredentialDelay(post(request("incorrect")), 800, denied);
+  });
+});
+
+describe("shared credential failure delays", () => {
+  beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout"] }));
+  afterEach(() => vi.useRealTimers());
+
+  it("keeps rotating untrusted X-Forwarded-For entries in a single source bucket", async () => {
+    for (const [index, address] of [undefined, "198.51.100.1", "198.51.100.2", "198.51.100.3"].entries()) {
+      await expectCredentialDelay(login(loginRequest("incorrect", address)), 300 + 100 * index, 401);
+    }
+    await expectCredentialDelay(sync(syncRequest("incorrect", "198.51.100.4")), 700, 403);
+  });
+
+  it("groups missing and invalid last hops when the proxy is trusted", async () => {
+    vi.stubEnv("TRUST_PROXY", "true");
+    await expectCredentialDelay(sync(syncRequest("incorrect", "198.51.100.1, invalid")), 300, 403);
+    await expectCredentialDelay(sync(syncRequest("incorrect")), 400, 403);
+    await expectCredentialDelay(sync(syncRequest("incorrect", "198.51.100.1")), 300, 403);
+  });
+
+  it("caps global failure delays across rotating sources and lets the operator sync immediately", async () => {
+    vi.stubEnv("TRUST_PROXY", "true");
+    vi.mocked(runSyncJob).mockResolvedValue(syncResult);
+    for (let index = 1; index <= 46; index++) {
+      const address = `198.51.100.${index}`;
+      const delay = 300 + 100 * Math.max(0, index - 30);
+      if (index % 2 === 0) {
+        await expectCredentialDelay(sync(syncRequest("incorrect", address)), delay, 403);
+      } else {
+        await expectCredentialDelay(login(loginRequest("incorrect", address)), delay, 401);
+      }
+    }
+    const cappedFailure = sync(syncRequest("incorrect", "198.51.100.47"));
+    const response = await sync(syncRequest(adminToken, "198.51.100.47"));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(syncResult);
+    expect(runSyncJob).toHaveBeenCalledExactlyOnceWith({ manual: true });
+    expect((await login(loginRequest(password, "198.51.100.47"))).cookies.has(SESSION_COOKIE_NAME)).toBe(true);
+    await expectCredentialDelay(cappedFailure, 2_000, 403);
+    await expectCredentialDelay(sync(syncRequest("incorrect", "198.51.100.48")), 2_000, 403);
     vi.mocked(Date.now).mockReturnValue(testTime + 60_000);
-    expect((await post(request(valid, "192.0.2.1"))).status).toBe(200);
+    await expectCredentialDelay(sync(syncRequest("incorrect", "198.51.100.48")), 300, 403);
   });
 });
 

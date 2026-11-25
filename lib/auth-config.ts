@@ -1,19 +1,24 @@
 const PLACEHOLDER = /^(?:change[-_ ]*me|replace[-_ ]*me|placeholder|your[-_ ]|example|sample|dummy|default|dev[-_ ]|test[-_ ]|insert[-_ ]|set[-_ ]*me|todo)/i;
 
 const PREDICTABLE_RUN_LENGTH = 8;
-const INTERLEAVED_RUN_LENGTH = PREDICTABLE_RUN_LENGTH * 2 - 1;
-const ALTERNATING_LETTERS_AND_DIGITS = /^(?:(?:[a-z]\d)+[a-z]|(?:\d[a-z])+\d)$/;
 const predictableRuns = new Set<string>();
-for (const sequence of [
-  "34567890123456",
+for (const ring of [
+  "0123456789",
   "0123456789abcdef",
+  "abcdefghijklmnopqrstuvwxyz",
   "qwertyuiopasdfghjklzxcvbnm",
   "1qaz2wsx3edc4rfv5tgb6yhn7ujm8ik9ol0p",
 ]) {
-  for (let start = 0; start <= sequence.length - PREDICTABLE_RUN_LENGTH; start++) {
-    const run = sequence.slice(start, start + PREDICTABLE_RUN_LENGTH);
-    predictableRuns.add(run);
-    predictableRuns.add([...run].reverse().join(""));
+  for (let start = 0; start < ring.length; start++) {
+    for (const step of [1, 2, -1, -2]) {
+      let run = "";
+      let position = start;
+      for (let length = 0; length < PREDICTABLE_RUN_LENGTH; length++) {
+        run += ring[position];
+        position = (position + step + ring.length) % ring.length;
+      }
+      predictableRuns.add(run);
+    }
   }
 }
 
@@ -23,35 +28,29 @@ export function isPrivateMode(): boolean {
 
 function hasPredictableRun(value: string): boolean {
   for (let start = 0; start <= value.length - PREDICTABLE_RUN_LENGTH; start++) {
-    const run = value.slice(start, start + PREDICTABLE_RUN_LENGTH);
-    if (predictableRuns.has(run)) return true;
-    const first = run.charCodeAt(0);
-    const step = run.charCodeAt(1) - first;
-    if (
-      Math.abs(step) === 1 &&
-      /^[a-z0-9]+$/.test(run) &&
-      [...run].every((char, index) => char.charCodeAt(0) === first + step * index)
-    ) return true;
+    if (predictableRuns.has(value.slice(start, start + PREDICTABLE_RUN_LENGTH))) return true;
   }
   return false;
 }
 
-function hasInterleavedPredictableRun(value: string): boolean {
-  for (let start = 0; start <= value.length - INTERLEAVED_RUN_LENGTH; start++) {
-    const run = value.slice(start, start + INTERLEAVED_RUN_LENGTH);
-    if (!ALTERNATING_LETTERS_AND_DIGITS.test(run)) continue;
-    const sequence = [...run].filter((_, index) => index % 2 === 0).join("");
-    if (hasPredictableRun(sequence)) return true;
+function hasPredictableSequence(value: string): boolean {
+  if (hasPredictableRun(value)) return true;
+  if (value.length < PREDICTABLE_RUN_LENGTH * 2 - 1) return false;
+
+  let evenTrack = "";
+  let oddTrack = "";
+  for (let index = 0; index < value.length; index += 2) {
+    evenTrack += value[index];
+    oddTrack += value[index + 1] ?? "";
   }
-  return false;
+  return hasPredictableRun(evenTrack) || hasPredictableRun(oddTrack);
 }
 
 function isPredictableCredential(value: string): boolean {
   const raw = value.toLowerCase();
   const alphanumeric = raw.replace(/[^a-z0-9]/g, "");
-  return hasPredictableRun(raw) ||
-    (alphanumeric !== raw && hasPredictableRun(alphanumeric)) ||
-    hasInterleavedPredictableRun(alphanumeric);
+  return hasPredictableSequence(raw) ||
+    (alphanumeric !== raw && hasPredictableSequence(alphanumeric));
 }
 
 function isUsableCredential(value: string | undefined, minLength: number): boolean {

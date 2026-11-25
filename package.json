@@ -10,6 +10,7 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:production": "npm run build && MODEL_COMPASS_TEST_PRODUCTION=1 vitest run tests/auth-production.test.ts",
     "test:watch": "vitest",
     "db:migrate": "tsx lib/database/migrate.ts",
     "seed:demo": "tsx scripts/seed-demo.ts",

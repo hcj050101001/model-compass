@@ -47,14 +47,19 @@ Open `http://127.0.0.1:3100`.
    ```
 3. Run `npm run sync:data` from the operator environment. The settings page shows sync status.
 
+## Trusted Reverse Proxy
+
+Set `TRUST_PROXY=true` when deploying behind a trusted reverse proxy that overwrites or appends the peer IP to `X-Forwarded-For`. The app uses only the last entry as the source. With the setting off, all requests share one source bucket. Missing or invalid source addresses also use a shared bucket. Every failed credential check counts toward the same global failure window across login and manual sync.
+
+Failed credentials incur `min(2000, 300 + 100 × max(S − 1, G − 30))` milliseconds of delay, where `S` and `G` count source and global failures in the last 60 seconds, including the current failure. Valid credentials bypass the failure delay.
+
 ## Testing & Verification
 
 ```bash
-npx tsc --noEmit
-npm run lint
-npm test
-npm run build
+npm run lint && npm run typecheck && npm test && npm run test:production
 ```
+
+`npm test` builds the app if `.next/BUILD_ID` is missing. `npm run test:production` always builds a fresh production bundle and checks the login redirect through `next start`.
 
 ## Attribution & License Compliance
 
