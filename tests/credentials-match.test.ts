@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { credentialsMatch } from "@/lib/credentials-match";
+import { describe, expect, it, vi } from "vitest";
+import { credentialsMatch, delayFailedCredential, getRecordedFailureCount } from "@/lib/credentials-match";
 
 describe("credentialsMatch", () => {
   it.each([
@@ -14,4 +14,25 @@ describe("credentialsMatch", () => {
   ] as const)("compares %s without throwing", (_label, provided, expected, matches) => {
     expect(credentialsMatch(provided, expected)).toBe(matches);
   });
+});
+
+it("evicts excess failure records and caps the overflow delay at two seconds", async () => {
+  vi.useFakeTimers();
+  try {
+    const headers = new Headers();
+    const failures = Array.from({ length: 47 }, () => delayFailedCredential(headers));
+    expect(getRecordedFailureCount()).toBe(47);
+
+    const completed = vi.fn();
+    const overflow = Array.from({ length: 5 }, () => delayFailedCredential(headers).then(completed));
+    expect(getRecordedFailureCount()).toBe(47);
+
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(completed).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(completed).toHaveBeenCalledTimes(overflow.length);
+    await Promise.all([...failures, ...overflow]);
+  } finally {
+    vi.useRealTimers();
+  }
 });

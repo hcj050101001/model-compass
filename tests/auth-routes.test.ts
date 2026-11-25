@@ -155,7 +155,16 @@ describe("auth configuration at startup", () => {
     ["SESSION_SECRET", "V6*sW+2Q@ABCDEFGH~pN9!uY=4H#LjX3B"],
     ["ACCESS_PASSWORD", "V6*sW+2Q@QWERTYUI~pN9!uY=4H#Lj"],
     ["ADMIN_TOKEN", "V6*sW+2Q@A1B2C3D4E5F6G7H8~pN9!uY=4H#Lj"],
-    ...["9abcdef0", "bcdef012", "f0123456", "xyzabcde", "edcbazyx", "acegikmo"].map(
+    ["SESSION_SECRET", "V6*sW+2Q@adgjmpsv~pN9!uY=4H#LjX3B"],
+    ["SESSION_SECRET", "V6*sW+2Q@vspmjgda~pN9!uY=4H#LjX3B"],
+    ["ACCESS_PASSWORD", "V6*sW+2Q@03692581~pN9!uY=4H#LjX3B"],
+    ["ACCESS_PASSWORD", "V6*sW+2Q@0369cfil~pN9!uY=4H#LjX3B"],
+    ["ADMIN_TOKEN", "V6*sW+2Q@aeimquy2~pN9!uY=4H#LjX3B"],
+    ["SESSION_SECRET", "V6*sW+2Q@aX9dX9gX9jX9mX9pX9sX9v~pN9"],
+    ["ACCESS_PASSWORD", "V6*sW+2Q@a12b12c12d12e12f12g12h12~pN9"],
+    ["SESSION_SECRET", "V6*sW+2Q@a!d9g@j8m#p7s%v~pN9!uY=4H#LjX3B"],
+    ["SESSION_SECRET", "V6*sW+2Q@a!?dX!gX9j!?m!Bp!@sX9v~pN9!uY=4H#LjX3B"],
+    ...["9abcdef0", "bcdef012", "f0123456", "xyzabcde", "edcbazyx", "acegikmo", "vafkpuze"].map(
       (run) => ["SESSION_SECRET", `V6*sW+2Q@${run}~pN9!uY=4H#LjX3B`],
     ),
   ])("rejects predictable credential forms in %s (%#)", (name, value) => {
@@ -169,33 +178,65 @@ describe("auth configuration at startup", () => {
     ["decimal", "0123456789"],
     ["hexadecimal", "0123456789abcdef"],
     ["alphabet", "abcdefghijklmnopqrstuvwxyz"],
+    ["alphanumeric", "abcdefghijklmnopqrstuvwxyz0123456789"],
     ["keyboard rows", "qwertyuiopasdfghjklzxcvbnm"],
     ["keyboard columns", "1qaz2wsx3edc4rfv5tgb6yhn7ujm8ik9ol0p"],
   ].flatMap(([family, ring]) => {
-    const run = (start: number, step: number) => Array.from({ length: 8 }, (_, index) =>
-      ring[(start + step * index + ring.length * 2) % ring.length],
-    );
-    const wrapped = run(ring.length - 2, 1);
-    const filler = "m3p7s9v2";
-    const atStart = (sequence: string) => `${sequence}!~N9uY4HLjX3B@V6sW2Q+g5K8zR`;
-    return [
-      [family, "forward wrap", atStart(wrapped.join(""))],
-      [family, "reverse wrap", atStart(run(1, -1).join(""))],
-      [family, "forward step two", atStart(run(ring.length - 3, 2).join(""))],
-      [family, "reverse step two", atStart(run(2, -2).join(""))],
-      [family, "separated", atStart(wrapped.join("-_ "))],
-      [family, "interleaved in the first track", atStart(wrapped.map((char, i) => char + filler[i]).join(""))],
-      [family, "interleaved in the second track", atStart(wrapped.map((char, i) => filler[i] + char).join(""))],
-      [family, "mixed case", atStart(run(ring.length - 5, 1).map((char, i) => i % 2 ? char.toUpperCase() : char).join(""))],
-      [family, "middle of a credential", `V6*sW+2Q@${wrapped.join("")}~pN9!uY=4H#LjX3B`],
+    const cases = [];
+    const filler = ["m3p7s9v2", "K8zR6c5t"];
+    const formats = [
+      { format: "plain", separator: "", mixedCase: false },
+      { format: "mixed case", separator: "", mixedCase: true },
+      { format: "separated", separator: "-_ ", mixedCase: false },
+      { format: "separated and mixed case", separator: "-_ ", mixedCase: true },
     ];
+    for (const step of [1, -1, 2, -2, 3, -3, 4, 5]) {
+      const starts = [{ topology: "wrapped", start: step > 0 ? ring.length - 1 : 0 }];
+      // Eight characters span seven differences, which may require wrapping on short rings.
+      if (7 * Math.abs(step) < ring.length) {
+        starts.push({ topology: "unwrapped", start: step > 0 ? 0 : ring.length - 1 });
+      }
+      for (const { topology, start } of starts) {
+        const run = Array.from({ length: 8 }, (_, index) =>
+          ring[(start + step * index + ring.length * 3) % ring.length],
+        );
+        for (let stride = 1; stride <= 3; stride++) {
+          for (let offset = 0; offset < stride; offset++) {
+            const track = run.flatMap((char, index) => {
+              const padding = filler.slice(0, stride - 1).map((lane) => lane[index]);
+              padding.splice(offset, 0, char);
+              return padding;
+            });
+            for (const { format, separator, mixedCase } of formats) {
+              const sequence = track
+                .map((char, index) => mixedCase && Math.floor(index / stride) % 2 === 0 ? char.toUpperCase() : char)
+                .join(separator);
+              const value = `V6*sW+2Q@${sequence}~pN9!uY=4H#LjX3B`;
+              cases.push({ family, step, topology, stride, offset, format, value });
+            }
+          }
+        }
+      }
+    }
+    return cases;
   });
 
-  it.each(generatedSequences)("rejects generated %s sequences (%s)", (_family, _shape, value) => {
-    vi.stubEnv("SESSION_SECRET", value);
-    expect(register).toThrow(startupHalt);
-    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("SESSION_SECRET"));
-  });
+  it.each(generatedSequences)(
+    "rejects $family sequences (step $step, $topology, stride $stride, offset $offset, $format)",
+    ({ value }) => {
+      vi.stubEnv("SESSION_SECRET", value);
+      expect(register).toThrow(startupHalt);
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining("SESSION_SECRET"));
+    },
+  );
+
+  it.each(["abcefgik", "abcdefgi", "aaaaaabb", "aaaaaaaa"])(
+    "accepts a run without constant nonzero differences (%s)",
+    (run) => {
+      vi.stubEnv("SESSION_SECRET", `V6*sW+2Q@${run}~pN9!uY=4H#LjX3B`);
+      expect(register).not.toThrow();
+    },
+  );
 
   it.each(["1234567", "zyxwvut", "89abcde", "3edc4rf", "iuytrew", "9abcdef", "xyzabcd", "acegikm"])(
     "accepts a seven-character sequence %s",
@@ -460,12 +501,16 @@ describe("shared credential failure delays", () => {
   beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout"] }));
   afterEach(() => vi.useRealTimers());
 
-  it("keeps rotating untrusted X-Forwarded-For entries in a single source bucket", async () => {
-    for (const [index, address] of [undefined, "198.51.100.1", "198.51.100.2", "198.51.100.3"].entries()) {
-      await expectCredentialDelay(login(loginRequest("incorrect", address)), 300 + 100 * index, 401);
-    }
-    await expectCredentialDelay(sync(syncRequest("incorrect", "198.51.100.4")), 700, 403);
-  });
+  it.each([undefined, "false"])(
+    "keeps rotating X-Forwarded-For entries in a single source bucket with TRUST_PROXY=%s",
+    async (trustProxy) => {
+      vi.stubEnv("TRUST_PROXY", trustProxy);
+      for (const [index, address] of [undefined, "198.51.100.1", "198.51.100.2", "198.51.100.3"].entries()) {
+        await expectCredentialDelay(login(loginRequest("incorrect", address)), 300 + 100 * index, 401);
+      }
+      await expectCredentialDelay(sync(syncRequest("incorrect", "198.51.100.4")), 700, 403);
+    },
+  );
 
   it("groups missing and invalid last hops when the proxy is trusted", async () => {
     vi.stubEnv("TRUST_PROXY", "true");

@@ -20,6 +20,10 @@ export function credentialsMatch(provided: string, expected: string): boolean {
   return timingSafeEqual(credentialDigest(provided), credentialDigest(expected));
 }
 
+export function getRecordedFailureCount(): number {
+  return failures.length;
+}
+
 function getTrustedSource(headers: Headers): string | undefined {
   if (process.env.TRUST_PROXY !== "true") return;
   // The trusted proxy must write its peer address as the last entry.

@@ -1,49 +1,52 @@
 const PLACEHOLDER = /^(?:change[-_ ]*me|replace[-_ ]*me|placeholder|your[-_ ]|example|sample|dummy|default|dev[-_ ]|test[-_ ]|insert[-_ ]|set[-_ ]*me|todo)/i;
 
 const PREDICTABLE_RUN_LENGTH = 8;
-const predictableRuns = new Set<string>();
-for (const ring of [
+const SEQUENCE_RINGS = [
   "0123456789",
   "0123456789abcdef",
   "abcdefghijklmnopqrstuvwxyz",
+  // Catch alphabetic progressions that continue through decimal digits.
+  "abcdefghijklmnopqrstuvwxyz0123456789",
   "qwertyuiopasdfghjklzxcvbnm",
   "1qaz2wsx3edc4rfv5tgb6yhn7ujm8ik9ol0p",
-]) {
-  for (let start = 0; start < ring.length; start++) {
-    for (const step of [1, 2, -1, -2]) {
-      let run = "";
-      let position = start;
-      for (let length = 0; length < PREDICTABLE_RUN_LENGTH; length++) {
-        run += ring[position];
-        position = (position + step + ring.length) % ring.length;
-      }
-      predictableRuns.add(run);
-    }
-  }
-}
+];
 
 export function isPrivateMode(): boolean {
   return process.env.PRIVATE_MODE !== "false";
 }
 
-function hasPredictableRun(value: string): boolean {
-  for (let start = 0; start <= value.length - PREDICTABLE_RUN_LENGTH; start++) {
-    if (predictableRuns.has(value.slice(start, start + PREDICTABLE_RUN_LENGTH))) return true;
+function hasPredictableRun(value: string, ring: string, stride: number, offset: number): boolean {
+  let previousPosition = -1;
+  let previousDifference = 0;
+  let runLength = 1;
+  for (let index = offset; index < value.length; index += stride) {
+    const position = ring.indexOf(value[index]);
+    const difference = position < 0 || previousPosition < 0
+      ? 0
+      : (position - previousPosition + ring.length) % ring.length;
+
+    if (difference === 0) {
+      runLength = 1;
+    } else {
+      runLength = difference === previousDifference ? runLength + 1 : 2;
+      if (runLength >= PREDICTABLE_RUN_LENGTH) return true;
+    }
+    previousDifference = difference;
+    previousPosition = position;
   }
   return false;
 }
 
 function hasPredictableSequence(value: string): boolean {
-  if (hasPredictableRun(value)) return true;
-  if (value.length < PREDICTABLE_RUN_LENGTH * 2 - 1) return false;
-
-  let evenTrack = "";
-  let oddTrack = "";
-  for (let index = 0; index < value.length; index += 2) {
-    evenTrack += value[index];
-    oddTrack += value[index + 1] ?? "";
+  for (let stride = 1; stride <= 3; stride++) {
+    const span = (PREDICTABLE_RUN_LENGTH - 1) * stride + 1;
+    for (let offset = 0; offset < stride && offset + span <= value.length; offset++) {
+      for (const ring of SEQUENCE_RINGS) {
+        if (hasPredictableRun(value, ring, stride, offset)) return true;
+      }
+    }
   }
-  return hasPredictableRun(evenTrack) || hasPredictableRun(oddTrack);
+  return false;
 }
 
 function isPredictableCredential(value: string): boolean {

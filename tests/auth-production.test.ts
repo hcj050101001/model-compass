@@ -1,20 +1,38 @@
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { setTimeout as wait } from "node:timers/promises";
 import { promisify } from "node:util";
 import { beforeAll, expect, it } from "vitest";
 
+const buildIdPath = ".next/BUILD_ID";
+const usesPrebuiltBundle = process.env.MODEL_COMPASS_TEST_PRODUCTION === "1";
+let previousBuildId: string | undefined;
+
 beforeAll(async () => {
-  if (existsSync(".next/BUILD_ID")) return;
-  if (process.env.MODEL_COMPASS_TEST_PRODUCTION === "1") {
-    throw new Error("Production build missing. Run npm run test:production.");
+  if (usesPrebuiltBundle) {
+    if (!existsSync(buildIdPath)) {
+      throw new Error("Production build missing. Run npm run test:production.");
+    }
+    return;
   }
+
+  // Exercise replacement of an existing build ID even on a clean checkout.
+  if (!existsSync(buildIdPath)) {
+    mkdirSync(".next", { recursive: true });
+    writeFileSync(buildIdPath, "stale-build-fixture", { flag: "wx" });
+  }
+  previousBuildId = readFileSync(buildIdPath, "utf8");
   await promisify(execFile)("npm", ["run", "build"], {
     env: { ...process.env, NODE_ENV: "production" },
     timeout: 240_000,
   });
 }, 245_000);
+
+it.skipIf(usesPrebuiltBundle)("replaces an existing build before testing current source", () => {
+  expect(previousBuildId).toBeDefined();
+  expect(readFileSync(buildIdPath, "utf8")).not.toBe(previousBuildId);
+});
 
 it(
   "emits a relative Location through next start with forwarded proto and host",
