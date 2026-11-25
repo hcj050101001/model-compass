@@ -1,21 +1,14 @@
 import type { NormalizedBundle } from "../artificial-analysis/mapper";
+import {
+  findVerifiedMapping,
+  loadVerifiedChannelMappings,
+  makeProvenance,
+  perTokenToPerMillion,
+  type VerifiedChannelMapping,
+} from "../model-mappings";
 
 const LITELLM_PRICING_URL =
   "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
-
-const DIRECT_PROVIDERS = new Set([
-  "openai",
-  "anthropic",
-  "gemini",
-  "google",
-  "deepseek",
-  "xai",
-  "dashscope",
-  "moonshot",
-  "zhipu",
-  "minimax",
-  "mistral",
-]);
 
 interface LiteLLMEntry {
   input_cost_per_token?: number;
@@ -26,30 +19,23 @@ interface LiteLLMEntry {
   mode?: string;
 }
 
-function normalizeModelKey(str: string): string {
-  return str
-    .toLowerCase()
-    .replace(/^[^/]+\//, "")
-    .replace(/\([^)]*\)/g, "")
-    .replace(/[^a-z0-9]+/g, "");
-}
-
-function toPerMillion(perToken: unknown): number | null {
-  if (typeof perToken !== "number" || !Number.isFinite(perToken) || perToken < 0) {
-    return null;
-  }
-  return Number((perToken * 1_000_000).toFixed(6));
-}
-
 /**
- * Fetches official model token & cache pricing from LiteLLM's deterministic
- * community-maintained official pricing catalog (no API key required).
- * Prefers direct provider entries over cloud resellers (bedrock/vertex/azure).
- * Only backfills missing fields; never overwrites already-populated official prices.
+ * Package C: LiteLLM pricing may only fill EMPTY fields, and only for a
+ * release bound to an exact catalog key by a maintainer-verified entry in
+ * config/model-mappings.json. Name-based matching, candidate ordering and
+ * provider heuristics are not identity evidence and are never used; when no
+ * verified mapping exists (or it is ambiguous) the field stays empty.
+ * Invalid prices (negative, non-finite, overflow, non-zero rounding to 0)
+ * are rejected and never written as 0. Every filled field records
+ * field-level provenance.
  */
 export async function enrichWithLiteLLMPricing(
   bundle: NormalizedBundle,
-  options?: { url?: string; fetchImpl?: typeof fetch }
+  options?: {
+    url?: string;
+    fetchImpl?: typeof fetch;
+    mappings?: VerifiedChannelMapping[];
+  }
 ): Promise<{ enrichedMeasurements: number; catalogSize: number }> {
   const fetchFn = options?.fetchImpl ?? fetch;
   const url = options?.url ?? LITELLM_PRICING_URL;
@@ -65,51 +51,10 @@ export async function enrichWithLiteLLMPricing(
   const catalogEntries = Object.entries(rawCatalog).filter(
     ([k, v]) => k !== "sample_spec" && v && typeof v === "object" && (!v.mode || v.mode === "chat")
   );
+  const catalog = new Map(catalogEntries);
+  const mappings = options?.mappings ?? loadVerifiedChannelMappings();
 
-  // Index by normalized model name, keeping highest priority (direct provider > others)
-  const index = new Map<
-    string,
-    {
-      isDirect: boolean;
-      input: number | null;
-      output: number | null;
-      cacheRead: number | null;
-      cacheWrite: number | null;
-    }
-  >();
-
-  for (const [key, entry] of catalogEntries) {
-    const norm = normalizeModelKey(key);
-    if (!norm) continue;
-    const isDirect = DIRECT_PROVIDERS.has(
-      (entry.litellm_provider ?? "").toLowerCase()
-    );
-    const existing = index.get(norm);
-    const candidate = {
-      isDirect,
-      input: toPerMillion(entry.input_cost_per_token),
-      output: toPerMillion(entry.output_cost_per_token),
-      cacheRead: toPerMillion(entry.cache_read_input_token_cost),
-      cacheWrite: toPerMillion(entry.cache_creation_input_token_cost),
-    };
-
-    if (!existing) {
-      index.set(norm, candidate);
-    } else if (!existing.isDirect && candidate.isDirect) {
-      index.set(norm, candidate);
-    } else if (
-      existing.isDirect === candidate.isDirect &&
-      existing.cacheRead === null &&
-      candidate.cacheRead !== null
-    ) {
-      index.set(norm, {
-        ...existing,
-        cacheRead: candidate.cacheRead,
-        cacheWrite: existing.cacheWrite ?? candidate.cacheWrite,
-      });
-    }
-  }
-
+  const creatorSlugById = new Map(bundle.creators.map((c) => [c.id, c.slug]));
   const releaseById = new Map(bundle.releases.map((r) => [r.id, r]));
   const releaseByVariantId = new Map<string, (typeof bundle.releases)[number]>();
   for (const v of bundle.variants) {
@@ -121,26 +66,51 @@ export async function enrichWithLiteLLMPricing(
   for (const meas of bundle.measurements) {
     const rel = releaseByVariantId.get(meas.variantId);
     if (!rel) continue;
-    const match = index.get(normalizeModelKey(rel.name));
-    if (!match) continue;
+    const creatorSlug = creatorSlugById.get(rel.creatorId);
+    if (!creatorSlug) continue;
+    const mapping = findVerifiedMapping({
+      channel: "litellm",
+      creatorSlug,
+      releaseName: rel.name,
+      releaseDate: rel.releaseDate,
+      mappings,
+    });
+    if (!mapping) continue;
+    const entry = catalog.get(mapping.upstreamKey);
+    if (!entry) continue;
+
+    const candidate = {
+      input: perTokenToPerMillion(entry.input_cost_per_token),
+      output: perTokenToPerMillion(entry.output_cost_per_token),
+      cacheRead: perTokenToPerMillion(entry.cache_read_input_token_cost),
+      cacheWrite: perTokenToPerMillion(entry.cache_creation_input_token_cost),
+    };
 
     let updated = false;
-    if (meas.inputPricePerMillion === null && match.input !== null) {
-      meas.inputPricePerMillion = match.input;
-      updated = true;
-    }
-    if (meas.outputPricePerMillion === null && match.output !== null) {
-      meas.outputPricePerMillion = match.output;
-      updated = true;
-    }
-    if (meas.cacheReadPricePerMillion === null && match.cacheRead !== null) {
-      meas.cacheReadPricePerMillion = match.cacheRead;
-      updated = true;
-    }
-    if (meas.cacheWritePricePerMillion === null && match.cacheWrite !== null) {
-      meas.cacheWritePricePerMillion = match.cacheWrite;
-      updated = true;
-    }
+    const fill = (
+      field: "input" | "output" | "cacheRead" | "cacheWrite",
+      prop:
+        | "inputPricePerMillion"
+        | "outputPricePerMillion"
+        | "cacheReadPricePerMillion"
+        | "cacheWritePricePerMillion",
+      value: number | null
+    ) => {
+      if (meas[prop] === null && value !== null) {
+        meas[prop] = value;
+        meas.fieldSources = meas.fieldSources ?? {};
+        meas.fieldSources[field] = makeProvenance({
+          source: "litellm",
+          upstreamKey: mapping.upstreamKey,
+          observedAt: null,
+        });
+        updated = true;
+      }
+    };
+    fill("input", "inputPricePerMillion", candidate.input);
+    fill("output", "outputPricePerMillion", candidate.output);
+    fill("cacheRead", "cacheReadPricePerMillion", candidate.cacheRead);
+    fill("cacheWrite", "cacheWritePricePerMillion", candidate.cacheWrite);
 
     if (updated) {
       meas.pricingSource = meas.pricingSource

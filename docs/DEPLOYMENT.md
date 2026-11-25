@@ -10,6 +10,7 @@
    cd /home/ubuntu/apps/llm-frontier
    npm install
    NODE_OPTIONS="--max-old-space-size=1536" npm run build
+   npm run db:migrate
    npm run seed:demo # or npm run sync:data with live AA_API_KEY
    ```
 3. Run via systemd (`llm-frontier.service`) bound to `127.0.0.1:3100` and schedule hourly sync via `llm-frontier-sync.timer`.

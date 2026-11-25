@@ -1,5 +1,5 @@
 import { desc, eq } from "drizzle-orm";
-import { ensureSchema, getDb } from "./index";
+import { assertSchemaCompatible, getDb } from "./index";
 import {
   benchmarkMeasurements,
   dataSnapshots,
@@ -83,7 +83,7 @@ export function canonicalizeMeasurementRows(
 export async function getActiveSnapshot(): Promise<
   typeof dataSnapshots.$inferSelect | null
 > {
-  await ensureSchema();
+  await assertSchemaCompatible();
   const db = getDb();
   const [snap] = await db
     .select()
@@ -97,8 +97,10 @@ export async function getActiveSnapshot(): Promise<
 export async function getActiveMeasurements(
   snapshotId?: string
 ): Promise<{ snapshot: Awaited<ReturnType<typeof getActiveSnapshot>>; rows: MeasurementRow[] }> {
-  await ensureSchema();
+  await assertSchemaCompatible();
   const db = getDb();
+  // Named reconciliation entry point: only active/archived snapshots are
+  // readable; staging/failed snapshots are never served (secretary ruling 5).
   const snapshot: Awaited<ReturnType<typeof getActiveSnapshot>> = snapshotId
     ? (
         await db
@@ -106,7 +108,7 @@ export async function getActiveMeasurements(
           .from(dataSnapshots)
           .where(eq(dataSnapshots.id, snapshotId))
           .limit(1)
-      )[0] ?? null
+      ).filter((s) => s.status === "active" || s.status === "archived")[0] ?? null
     : await getActiveSnapshot();
 
   if (!snapshot) {
@@ -195,7 +197,13 @@ export async function getActiveMeasurements(
     }
 
     let dataQuality: DataQualitySummary;
-    if (m.dataQualityLevel && m.dataQualityLevel !== "D") {
+    if (
+      m.dataQualityLevel &&
+      m.dataQualityLevel !== "D" &&
+      // Historical A/B rows without Package C quality evidence are not
+      // trusted as measured; they fall through to fail-closed classification.
+      (m.dataQualityLevel !== "A" && m.dataQualityLevel !== "B" || m.qualityEvidenceJson)
+    ) {
       dataQuality = {
         level: m.dataQualityLevel as DataQualityLevel,
         source_type: m.dataSourceType as DataSourceType,
@@ -220,20 +228,20 @@ export async function getActiveMeasurements(
       variantId: v.id,
       releaseId: r.id,
       creatorId: c.id,
-      creatorName: c.name,
-      creatorSlug: c.slug,
+      creatorName: m.frozenCreatorName ?? c.name,
+      creatorSlug: m.frozenCreatorSlug ?? c.slug,
       creatorColor: c.color,
       family: r.family,
-      releaseName: r.name,
-      releaseDate: r.releaseDate,
-      contextWindow: r.contextWindow,
+      releaseName: m.frozenReleaseName ?? r.name,
+      releaseDate: m.frozenReleaseDate ?? r.releaseDate,
+      contextWindow: m.frozenContextWindow ?? r.contextWindow,
       isOpenWeights: r.isOpenWeights,
       sourceUrl: m.sourceUrl,
       sourceSlug: v.sourceSlug,
       rawName: v.rawName,
-      displayName: v.displayName,
+      displayName: m.frozenDisplayName ?? v.displayName,
       effortRaw: v.effortRaw,
-      effortNormalized: v.effortNormalized,
+      effortNormalized: m.frozenEffortNormalized ?? v.effortNormalized,
       effortOrder: v.effortOrder,
       effortLadderType: v.effortLadderType as EffortLadderType,
       isReasoningModel: v.isReasoningModel,
@@ -261,11 +269,12 @@ export async function getActiveMeasurements(
     };
   });
 
-  return { snapshot, rows: canonicalizeMeasurementRows(rows) };
+  // Frozen columns are authoritative: no read-path re-canonicalization.
+  return { snapshot, rows };
 }
 
 export async function getSyncStatusInfo() {
-  await ensureSchema();
+  await assertSchemaCompatible();
   const db = getDb();
   const activeSnapshot = await getActiveSnapshot();
   const recentJobs = await db
@@ -292,4 +301,34 @@ export async function getSyncStatusInfo() {
     ),
     apiTier: process.env.AA_API_TIER ?? "free",
   };
+}
+
+/**
+ * Named internal reconciliation read (Package B ruling 3): exposes the
+ * DB-only `legacy_backfill` marker and Package C field provenance for
+ * operator verification. This is intentionally NOT used by any public
+ * API/JSON route, so the marker never leaks to public payloads.
+ */
+export async function getSnapshotReconciliation(snapshotId: string) {
+  await assertSchemaCompatible();
+  const db = getDb();
+  const rows = await db
+    .select({
+      measurementId: benchmarkMeasurements.id,
+      variantId: benchmarkMeasurements.variantId,
+      legacyBackfill: benchmarkMeasurements.legacyBackfill,
+      fieldSourcesJson: benchmarkMeasurements.fieldSourcesJson,
+      firstObservedAt: benchmarkMeasurements.firstObservedAt,
+    })
+    .from(benchmarkMeasurements)
+    .where(eq(benchmarkMeasurements.snapshotId, snapshotId));
+  return rows.map((r) => ({
+    measurementId: r.measurementId,
+    variantId: r.variantId,
+    legacyBackfill: r.legacyBackfill === 1,
+    fieldSources: r.fieldSourcesJson
+      ? (JSON.parse(r.fieldSourcesJson) as Record<string, unknown>)
+      : null,
+    firstObservedAt: r.firstObservedAt,
+  }));
 }
