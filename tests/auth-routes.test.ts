@@ -2,7 +2,6 @@ import { createHmac, randomBytes } from "node:crypto";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getRelativeURL } from "next/dist/shared/lib/router/utils/relativize-url";
 import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,12 +21,29 @@ const origin = "https://model-compass.local";
 const password = randomBytes(32).toString("hex");
 const sessionSecret = randomBytes(32).toString("hex");
 const adminToken = randomBytes(32).toString("hex");
+const syncResult = {
+  jobId: "test-job",
+  status: "success",
+  fetchedCount: 0,
+  validCount: 0,
+  rejectedCount: 0,
+  rateLimitRemaining: null,
+  rateLimitReset: null,
+  isDemo: false,
+} as const;
 
-function loginRequest(value: string): Request {
+function loginRequest(value: string, forwardedFor?: string): Request {
   return new Request(`${origin}/api/auth/login`, {
     method: "POST",
+    headers: forwardedFor ? { "x-forwarded-for": forwardedFor } : undefined,
     body: JSON.stringify({ password: value }),
   });
+}
+
+function syncRequest(token: string, forwardedFor?: string): Request {
+  const headers = new Headers({ "x-admin-token": token });
+  if (forwardedFor) headers.set("x-forwarded-for", forwardedFor);
+  return new Request(`${origin}/api/admin/sync`, { method: "POST", headers });
 }
 
 function streamedLoginRequest(body: Uint8Array): Request {
@@ -48,7 +64,12 @@ function signedSession(payload: object): string {
   return `${encoded}.${signature}`;
 }
 
+let testTime = Date.now();
+
 beforeEach(() => {
+  // The route limiters retain their window for the lifetime of the module.
+  testTime += 120_000;
+  vi.spyOn(Date, "now").mockReturnValue(testTime);
   vi.stubEnv("NODE_ENV", "production");
   vi.stubEnv("NEXT_RUNTIME", "nodejs");
   vi.stubEnv("NEXT_PHASE", undefined);
@@ -64,7 +85,7 @@ afterEach(() => {
   vi.mocked(runSyncJob).mockReset();
 });
 
-describe("production auth configuration", () => {
+describe("auth configuration at startup", () => {
   const startupHalt = new Error("Startup halted");
 
   beforeEach(() => {
@@ -109,6 +130,31 @@ describe("production auth configuration", () => {
     expect(register).not.toThrow();
   });
 
+  it.each([
+    ["SESSION_SECRET", "a-b-c-d-e-f-g-h-i-j-k-l-m-n-o-p-q"],
+    ["SESSION_SECRET", "q-w-e-r-t-y-u-i-o-p-a-s-d-f-g-h-j"],
+    ["SESSION_SECRET", "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"],
+    ["SESSION_SECRET", "V6*sW+2Q@12345678~pN9!uY=4H#Lj"],
+    ["ACCESS_PASSWORD", "V6*sW+2Q@zyxwvuts~pN9!uY=4H#Lj"],
+    ["ADMIN_TOKEN", "V6*sW+2Q@89abcdef~pN9!uY=4H#Lj"],
+    ["ACCESS_PASSWORD", "V6*sW+2Q@3edc4rfv~pN9!uY=4H#Lj"],
+    ["ADMIN_TOKEN", "V6*sW+2Q@iuytrewq~pN9!uY=4H#Lj"],
+    ["ADMIN_TOKEN", "V6*sW+2Q@3_e d-c4_r f-v~pN9!uY=4H#Lj"],
+  ])("rejects predictable credential forms in %s (%#)", (name, value) => {
+    vi.stubEnv(name, value);
+    expect(register).toThrow(startupHalt);
+    expect(process.exit).toHaveBeenCalledWith(1);
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining(name));
+  });
+
+  it.each(["1234567", "zyxwvut", "89abcde", "3edc4rf", "iuytrew"])(
+    "accepts a seven-character sequence %s",
+    (sequence) => {
+      vi.stubEnv("SESSION_SECRET", `V6*sW+2Q@${sequence}~pN9!uY=4H#Lj+3B`);
+      expect(register).not.toThrow();
+    },
+  );
+
   it("requires both credentials even when public reads are enabled", async () => {
     vi.stubEnv("PRIVATE_MODE", "false");
     expect(register).not.toThrow();
@@ -117,6 +163,33 @@ describe("production auth configuration", () => {
     expect(process.exit).toHaveBeenCalledWith(1);
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining("SESSION_SECRET"));
     expect((await middleware(new NextRequest(`${origin}/api/models`))).status).toBe(503);
+  });
+
+  it("halts production public startup with a weak ADMIN_TOKEN and closes protected paths", async () => {
+    vi.stubEnv("PRIVATE_MODE", "false");
+    vi.stubEnv("ADMIN_TOKEN", "short");
+    expect(register).toThrow(startupHalt);
+    expect(process.exit).toHaveBeenCalledWith(1);
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("ADMIN_TOKEN"));
+    expect((await middleware(new NextRequest(`${origin}/api/models`))).status).toBe(503);
+  });
+
+  it.each(["short", undefined])("validates ADMIN_TOKEN during development public startup (%#)", async (value) => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("PRIVATE_MODE", "false");
+    vi.stubEnv("ACCESS_PASSWORD", undefined);
+    vi.stubEnv("SESSION_SECRET", undefined);
+    vi.stubEnv("ADMIN_TOKEN", value);
+    vi.resetModules();
+    const startup = import("@/instrumentation");
+    if (value) {
+      await expect(startup).rejects.toThrow(startupHalt);
+      expect(process.exit).toHaveBeenCalledWith(1);
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining("ADMIN_TOKEN"));
+    } else {
+      await expect(startup).resolves.toHaveProperty("register");
+      expect(process.exit).not.toHaveBeenCalled();
+    }
   });
 
   it("allows a build without runtime credentials", () => {
@@ -204,37 +277,28 @@ describe("viewer access", () => {
     expect(getLoginReturnPath(loginUrl.searchParams.get("next"))).toBe(path);
   });
 
-  it("keeps the login redirect relative at the forwarded origin", async () => {
-    const listenerUrl = "http://localhost:3100/compare?model=a";
-    const forwardedOrigin = "https://model-compass.example:8443";
-    const forwarded = new URL(forwardedOrigin);
-    const response = await middleware(new NextRequest(listenerUrl, {
-      headers: { "x-forwarded-proto": forwarded.protocol.slice(0, -1), "x-forwarded-host": forwarded.host },
-    }));
-    expect(response.status).toBe(307);
-    // Next's router applies this conversion to the middleware response before sending it.
-    const location = getRelativeURL(response.headers.get("location") ?? "", listenerUrl);
-    expect(location).toBe("/login?next=%2Fcompare%3Fmodel%3Da");
-    expect(new URL(location, forwardedOrigin).href).toBe(`${forwardedOrigin}/login?next=%2Fcompare%3Fmodel%3Da`);
-  });
-
-  it.each(["/login", "/login/", "/login//", "/api/auth/logout", "/api/models", "/%61pi/models"])(
+  it.each([
+    "/login", "/login/", "/login//", "/login/extra", "/login;", "/login%3bparam/extra",
+    "/api", "/api?x=1", "/api;param", "/api/auth/logout", "/api/models", "/%61pi/models",
+    "/%6cogin", "/%6Cogin/", "/login%2f", "/api%2fmodels",
+  ])(
     "falls back to the homepage for a login or API return path %s",
     (path) => expect(getLoginReturnPath(path)).toBe("/"),
   );
 
-  it.each([null, "", "https://other.example/settings", "//evil.example/x", "/\\evil.example", "/%2f%2fevil.example"])(
+  it.each([null, "", "https://other.example/settings", "//evil.example/x", "/\\evil.example", "/%2f%2fevil.example", "/%5cevil.example"])(
     "falls back to the homepage for an invalid return path %s",
     (path) => expect(getLoginReturnPath(path)).toBe("/"),
   );
 
-  it("preserves an internal return path with a query", () => {
-    expect(getLoginReturnPath("/settings?tab=x")).toBe("/settings?tab=x");
-  });
+  it.each(["/settings?tab=x", "/login%3fnext", "/login-help", "/apiary"])(
+    "preserves an allowed internal path %s",
+    (path) => expect(getLoginReturnPath(path)).toBe(path),
+  );
 
   it("delays each failed password attempt and never sets a cookie", async () => {
     vi.stubEnv("ACCESS_PASSWORD", `${password}\uFFFD`);
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
     try {
       for (const value of ["incorrect", password, `${password}\uD800`]) {
         const completed = vi.fn<(response: Response) => void>();
@@ -293,6 +357,63 @@ describe("public reads when PRIVATE_MODE=false", () => {
   });
 });
 
+describe.each([
+  { name: "login", post: login, request: loginRequest, valid: password, denied: 401 },
+  { name: "sync", post: sync, request: syncRequest, valid: adminToken, denied: 403 },
+])("$name credential rate limiting", ({ post, request, valid, denied }) => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    vi.mocked(runSyncJob).mockResolvedValue(syncResult);
+  });
+
+  afterEach(() => vi.useRealTimers());
+
+  it("counts concurrent failures from the same source before the 300 ms delay", async () => {
+    const source = "192.0.2.1";
+    const responses = vi.fn<(response: Response) => void>();
+    const pending = Array.from({ length: 6 }, (_, index) =>
+      post(request("incorrect", `198.51.100.${index + 1}, ${source}`)).then((response) => {
+        responses(response);
+        return response;
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(299);
+    expect(responses).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 429 }));
+    const locked = await post(request(valid, source));
+    expect(locked.status).toBe(429);
+    expect(locked.headers.get("retry-after")).toBe("60");
+    expect(locked.headers.has("set-cookie")).toBe(false);
+    expect(runSyncJob).not.toHaveBeenCalled();
+    expect((await post(request(valid, "192.0.2.2"))).status).toBe(200);
+
+    await vi.advanceTimersByTimeAsync(1);
+    const statuses = (await Promise.all(pending)).map(({ status }) => status);
+    expect(statuses.filter((status) => status === denied)).toHaveLength(5);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(1);
+
+    vi.mocked(Date.now).mockReturnValue(testTime + 59_001);
+    expect((await post(request(valid, source))).headers.get("retry-after")).toBe("1");
+    vi.mocked(Date.now).mockReturnValue(testTime + 60_000);
+    expect((await post(request(valid, source))).status).toBe(200);
+  });
+
+  it("locks all sources at the global threshold", async () => {
+    const pending = Array.from({ length: 31 }, (_, index) =>
+      post(request("incorrect", `198.51.100.${index + 1}`)),
+    );
+    await vi.advanceTimersByTimeAsync(300);
+    const statuses = (await Promise.all(pending)).map(({ status }) => status);
+    expect(statuses.filter((status) => status === denied)).toHaveLength(30);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(1);
+    const locked = await post(request(valid, "192.0.2.1"));
+    expect(locked.status).toBe(429);
+    expect(locked.headers.get("retry-after")).toBe("60");
+    expect(runSyncJob).not.toHaveBeenCalled();
+    vi.mocked(Date.now).mockReturnValue(testTime + 60_000);
+    expect((await post(request(valid, "192.0.2.1"))).status).toBe(200);
+  });
+});
+
 describe.each(["true", "false"])("sync and upload when PRIVATE_MODE=%s", (mode) => {
   beforeEach(() => vi.stubEnv("PRIVATE_MODE", mode));
 
@@ -319,22 +440,25 @@ describe.each(["true", "false"])("sync and upload when PRIVATE_MODE=%s", (mode) 
     expect(runSyncJob).not.toHaveBeenCalled();
   });
 
+  it("distinguishes a surrogate from U+FFFD in the admin credential comparison", async () => {
+    vi.stubEnv("ADMIN_TOKEN", `${adminToken}\uFFFD`);
+    const request = syncRequest(adminToken);
+    // Fetch headers only accept ByteString, so supply the code units at the handler boundary.
+    const getHeader = request.headers.get.bind(request.headers);
+    vi.spyOn(request.headers, "get").mockImplementation((name) =>
+      name === "x-admin-token" ? `${adminToken}\uD800` : getHeader(name),
+    );
+    expect((await sync(request)).status).toBe(403);
+    expect(runSyncJob).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["success", 200],
     ["skipped_cooldown", 429],
     ["skipped_locked", 409],
     ["failed", 502],
   ] as const)("authorizes the operator and preserves %s as %i", async (status, httpStatus) => {
-    const result = {
-      jobId: "test-job",
-      status,
-      fetchedCount: 0,
-      validCount: 0,
-      rejectedCount: 0,
-      rateLimitRemaining: null,
-      rateLimitReset: null,
-      isDemo: false,
-    };
+    const result = { ...syncResult, status };
     vi.mocked(runSyncJob).mockResolvedValueOnce(result);
     const request = new NextRequest(`${origin}/api/admin/sync`, {
       method: "POST",

@@ -1,10 +1,11 @@
 const PLACEHOLDER = /^(?:change[-_ ]*me|replace[-_ ]*me|placeholder|your[-_ ]|example|sample|dummy|default|dev[-_ ]|test[-_ ]|insert[-_ ]|set[-_ ]*me|todo)/i;
 
 const PREDICTABLE_RUN_LENGTH = 8;
+const INTERLEAVED_RUN_LENGTH = PREDICTABLE_RUN_LENGTH * 2 - 1;
+const ALTERNATING_LETTERS_AND_DIGITS = /^(?:(?:[a-z]\d)+[a-z]|(?:\d[a-z])+\d)$/;
 const predictableRuns = new Set<string>();
 for (const sequence of [
-  "01234567890123456789",
-  "abcdefghijklmnopqrstuvwxyz",
+  "34567890123456",
   "0123456789abcdef",
   "qwertyuiopasdfghjklzxcvbnm",
   "1qaz2wsx3edc4rfv5tgb6yhn7ujm8ik9ol0p",
@@ -21,11 +22,36 @@ export function isPrivateMode(): boolean {
 }
 
 function hasPredictableRun(value: string): boolean {
-  const normalized = value.toLowerCase();
-  for (let start = 0; start <= normalized.length - PREDICTABLE_RUN_LENGTH; start++) {
-    if (predictableRuns.has(normalized.slice(start, start + PREDICTABLE_RUN_LENGTH))) return true;
+  for (let start = 0; start <= value.length - PREDICTABLE_RUN_LENGTH; start++) {
+    const run = value.slice(start, start + PREDICTABLE_RUN_LENGTH);
+    if (predictableRuns.has(run)) return true;
+    const first = run.charCodeAt(0);
+    const step = run.charCodeAt(1) - first;
+    if (
+      Math.abs(step) === 1 &&
+      /^[a-z0-9]+$/.test(run) &&
+      [...run].every((char, index) => char.charCodeAt(0) === first + step * index)
+    ) return true;
   }
   return false;
+}
+
+function hasInterleavedPredictableRun(value: string): boolean {
+  for (let start = 0; start <= value.length - INTERLEAVED_RUN_LENGTH; start++) {
+    const run = value.slice(start, start + INTERLEAVED_RUN_LENGTH);
+    if (!ALTERNATING_LETTERS_AND_DIGITS.test(run)) continue;
+    const sequence = [...run].filter((_, index) => index % 2 === 0).join("");
+    if (hasPredictableRun(sequence)) return true;
+  }
+  return false;
+}
+
+function isPredictableCredential(value: string): boolean {
+  const raw = value.toLowerCase();
+  const alphanumeric = raw.replace(/[^a-z0-9]/g, "");
+  return hasPredictableRun(raw) ||
+    (alphanumeric !== raw && hasPredictableRun(alphanumeric)) ||
+    hasInterleavedPredictableRun(alphanumeric);
 }
 
 function isUsableCredential(value: string | undefined, minLength: number): boolean {
@@ -36,7 +62,7 @@ function isUsableCredential(value: string | undefined, minLength: number): boole
       new Set(value).size >= 8 &&
       !PLACEHOLDER.test(value) &&
       !/^(.+?)\1+$/.test(value) &&
-      !hasPredictableRun(value)
+      !isPredictableCredential(value)
   );
 }
 
@@ -68,4 +94,13 @@ export function getAuthConfigError(): string | undefined {
     return "SESSION_SECRET and ACCESS_PASSWORD must be different.";
   }
   return getAdminTokenConfigError(ADMIN_TOKEN);
+}
+
+// Next's Node instrumentation imports this module at startup in development too.
+if (process.env.NEXT_RUNTIME === "nodejs" && process.env.NODE_ENV === "development" && !isPrivateMode()) {
+  const configError = getAuthConfigError();
+  if (configError) {
+    console.error(`[auth] ${configError}`);
+    process.exit(1);
+  }
 }

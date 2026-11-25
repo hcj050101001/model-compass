@@ -1,18 +1,26 @@
 import { NextResponse } from "next/server";
 import { getAdminTokenConfigError } from "@/lib/auth-config";
-import { credentialsMatch } from "@/lib/credentials-match";
+import { createCredentialRateLimiter, credentialsMatch, delayFailedCredential } from "@/lib/credentials-match";
 import { runSyncJob } from "@/lib/sync/engine";
+
+const checkAttempt = createCredentialRateLimiter();
 
 export async function POST(request: Request) {
   const adminHeader = request.headers.get("x-admin-token");
   const expectedToken = process.env.ADMIN_TOKEN;
 
-  if (
-    !adminHeader ||
-    !expectedToken ||
-    getAdminTokenConfigError(expectedToken) ||
-    !credentialsMatch(adminHeader, expectedToken)
-  ) {
+  const attempt = checkAttempt(request.headers, () =>
+    !!adminHeader && !!expectedToken && !getAdminTokenConfigError(expectedToken) &&
+    credentialsMatch(adminHeader, expectedToken),
+  );
+  if (attempt.status === "limited") {
+    return NextResponse.json({ error: "Too many authentication attempts" }, {
+      status: 429,
+      headers: { "Retry-After": String(attempt.retryAfter) },
+    });
+  }
+  if (attempt.status === "rejected") {
+    await delayFailedCredential();
     return NextResponse.json(
       { error: "Admin authorization required" },
       { status: 403 }

@@ -9,8 +9,7 @@ export function getLoginReturnPath(value: string | null): string {
       target.origin !== origin ||
       pathname.startsWith("//") ||
       pathname.startsWith("/\\") ||
-      pathname.replace(/\/+$/, "") === "/login" ||
-      pathname.startsWith("/api/")
+      /^\/(?:login|api)(?:[\/;]|$)/.test(pathname)
     ) return "/";
     return `${target.pathname}${target.search}${target.hash}`;
   } catch {
