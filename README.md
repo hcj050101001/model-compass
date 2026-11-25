@@ -6,10 +6,11 @@
 
 - **Reasoning Effort Curves**: Each `ModelRelease` renders an independent curve connecting its measured reasoning effort tiers (e.g., `Non-thinking → Minimal → Low → Medium → High → Very High → XHigh`). Unmeasured intermediate tiers are drawn as dashed segments; distinct models/versions are never connected.
 - **Unified Scales & Modes**:
-  - Default X-axis: Official Artificial Analysis `cost_per_task.total_cost` (USD / Task) on Log or Linear scale.
-  - Switchable X-axis modes: Input Price, Output Price, Cache Read Price, Blended Price (customizable Input/Output ratio, default 75/25), and Custom Workload Estimator (explicitly marked as estimated).
+  - Default X-axis: the multi-turn **estimated** task cost (EAC) computed from official token/cache pricing and the selected task profile (`light` / `standard` / `heavy`, default `standard`), on Log or Linear scale. The homepage chart is an intelligence-vs-estimate view; it is not the Artificial Analysis `cost_per_task` figure (which is not used, see `docs/DATA_SOURCES_AND_METHODOLOGY.md`).
+  - Switchable X-axis modes: measured RASC (USD / effective task), measured P50 session cost (USD / session), the multi-turn estimate above (USD / simulated task), Input / Output / Cache Read unit prices (USD / 1M tokens), and the legacy `custom_agent` estimator entry point.
+  - The `/api/frontier` endpoint takes the cost mode explicitly via `xMode` and defaults to measured `rasc` (unlike the homepage, whose default view is the estimate); the homepage settings copy and the API default are documented separately on purpose.
   - Switchable Y-axis metrics: AA Intelligence Index, AA Coding Index, AA Agentic Index, strictly isolated by `intelligence_index_version`.
-  - Zero-cost valid models are surfaced in a dedicated strip when Log scale is active rather than faking small positive numbers.
+  - Homepage chart/frontier candidates require a positive estimated cost; zero-cost entries are never faked into small positive numbers and remain available in the standard records and leaderboard. The `/compare` page performs pairwise comparison of selected variants under one cost scale.
 - **Pareto Frontier & Superior Alternatives**:
   - Strict Pareto dominance calculation (`calculateParetoFrontier`, `isDominated`, `findDominators`) with global vs. local frontier overlays.
   - Approximate superior alternative discovery with configurable cost tolerance (%) and minimum score gain, clearly separated from strict mathematical dominance.
@@ -21,7 +22,7 @@
   - Per-model marginal effort return analysis (`ΔScore / ΔCost`).
 - **Resilient Data Pipeline**:
   - Artificial Analysis API v2 adapter (`/api/v2/language/models/free` & `/api/v2/language/models`) with pagination, `X-RateLimit-*` tracking, exponential backoff, mid-pagination version-drift protection, and atomic SQLite snapshot switching.
-  - Optional OpenRouter metadata enrichment (`context_window`) without mixing third-party scores or replacing official task costs.
+  - Optional OpenRouter enrichment that backfills a missing `context_window` and any missing token/cache prices, without mixing third-party scores or overwriting Artificial Analysis or LiteLLM values already present.
 
 ## Quick Start (Local Development)
 
@@ -59,7 +60,7 @@ Failed credentials incur `min(2000, 300 + 100 × max(S − 1, G − 30))` millis
 npm run lint && npm run typecheck && npm test && npm run test:production
 ```
 
-`npm test` builds the app if `.next/BUILD_ID` is missing. `npm run test:production` always builds a fresh production bundle and checks the login redirect through `next start`.
+`npm test` runs the full suite, including the production assembly test, which **unconditionally rebuilds** the app before exercising it (a prebuilt bundle is only reused when the suite is invoked through `npm run test:production`, which builds a fresh production bundle first and then checks the login redirect through `next start`).
 
 ## Attribution & License Compliance
 

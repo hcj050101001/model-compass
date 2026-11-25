@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /settings
+Disallow: /login
+Disallow: /api/
+
+Sitemap: https://llm.nianhub.com/sitemap.xml
