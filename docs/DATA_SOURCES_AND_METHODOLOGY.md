@@ -16,7 +16,8 @@
 ## 3. Real-world Agent Session Cost (RASC) & Data Quality Grades
 - **Grade A**: Real Agent session records with actual billed USD amounts (`actualBilledUsd`).
 - **Grade B**: Real Agent session token logs (e.g., authorized OpenTelemetry/Langfuse exports or anonymized user uploads) priced via official token & cache rates.
-- **Grade C**: Standardized Estimated Agent Cost (**EAC**) computed from transparent, configurable session token templates (`light`, `medium`, `heavy`, or custom) and official pricing.
+- **Grade C**: Standardized Estimated Agent Cost (**EAC**) computed from transparent, configurable session token templates (`light`, `standard`, `heavy`, or custom) and official pricing.
+- **`estimated_cost` field**: In API responses and the standardized export, `estimated_cost` is the multi-turn simulation result for the `standard` task profile (not a measured cost). The legacy EAC entry point remains available as the frontier API's `custom_agent` mode. OpenRouter enrichment (above) may backfill a missing `context_window` and any of the four token/cache prices, but never overwrites Artificial Analysis or LiteLLM values already present.
 - **Grade D**: Missing valid pricing and real session data; excluded from cost rankings.
 - **Strict Isolation**: Grade A/B real costs and Grade C estimated costs are never mixed in the same Pareto frontier calculation.
 

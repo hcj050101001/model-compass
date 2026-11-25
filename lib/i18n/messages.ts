@@ -179,7 +179,7 @@ export const messages = {
     simpleResetZoom: "重置视图",
     simpleSelectModelsTip: "勾选加入对比",
     mobileSortBy: "排序",
-    mobileChartHint: "左上角更优，双指缩放，点按圆点查看",
+    mobileChartHint: "左上角更优，点按下方排行榜卡片查看详情",
     mobileDone: "完成",
     frontierLegend: "性价比最优线",
     chartFullscreen: "全屏",
@@ -374,7 +374,8 @@ export const messages = {
     simpleResetZoom: "Reset view",
     simpleSelectModelsTip: "Check to compare",
     mobileSortBy: "Sort",
-    mobileChartHint: "Top-left is better. Pinch to zoom, tap a dot to inspect.",
+    mobileChartHint:
+      "Top-left is better. Tap a leaderboard card below to view details.",
     mobileDone: "Done",
     frontierLegend: "Best Value Line",
     chartFullscreen: "Fullscreen",
