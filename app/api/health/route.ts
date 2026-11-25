@@ -1,23 +1,13 @@
 import { NextResponse } from "next/server";
-import { getActiveSnapshot } from "@/lib/database/queries";
 
+/**
+ * Liveness only (Package F probe split): answers that the web process is
+ * up. It must not touch the database or leak snapshot/demo details —
+ * data-plane readiness lives in /api/ready.
+ */
 export async function GET() {
-  try {
-    const snapshot = await getActiveSnapshot();
-    return NextResponse.json({
-      status: "ok",
-      app: process.env.APP_NAME ?? "ModelCompass",
-      hasSnapshot: Boolean(snapshot),
-      isDemo: snapshot?.isDemo ?? process.env.DEMO_MODE === "true",
-      timestamp: new Date().toISOString(),
-    });
-  } catch (err) {
-    return NextResponse.json(
-      {
-        status: "error",
-        error: err instanceof Error ? err.message : "Database unavailable",
-      },
-      { status: 500 }
-    );
-  }
+  return NextResponse.json(
+    { status: "ok" },
+    { headers: { "Cache-Control": "no-store" } }
+  );
 }

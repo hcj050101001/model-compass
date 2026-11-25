@@ -22,25 +22,10 @@ import { FrontierChart } from "./charts/FrontierChart";
 import { LeaderboardTable } from "./leaderboard/LeaderboardTable";
 import { ModelDetailDrawer } from "./model-detail/ModelDetailDrawer";
 
-const MAINSTREAM_PROVIDER_ORDER = [
-  "openai",
-  "anthropic",
-  "google",
-  "xai",
-  "deepseek",
-  "alibaba",
-  "zhipu",
-  "moonshot",
-  "minimax",
-  "bytedance-seed",
-  "meta",
-  "tencent",
-  "baidu",
-  "xiaomi",
-  "stepfun",
-] as const;
-
-const MAINSTREAM_PROVIDER_SET = new Set<string>(MAINSTREAM_PROVIDER_ORDER);
+import {
+  MAINSTREAM_PROVIDER_ORDER,
+  MAINSTREAM_PROVIDER_SET,
+} from "@/lib/analytics/homepage-providers";
 
 interface DashboardClientProps {
   rows: MeasurementRow[];
