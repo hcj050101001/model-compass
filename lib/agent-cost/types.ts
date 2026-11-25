@@ -13,8 +13,35 @@ export type DataQualityLevel = "A" | "B" | "C" | "D";
 export type DataSourceType =
   | "measured_billed"
   | "measured_token_pricing"
+  // Package C: strict mixed-source enum for groups combining verified
+  // billed amounts with auditable token-priced amounts (design sec.2.4).
+  | "measured_mixed"
   | "estimated"
   | "unavailable";
+
+/** Priceable fields that carry per-field provenance (Package C). */
+export type PriceFieldKey =
+  | "input"
+  | "output"
+  | "cacheRead"
+  | "cacheWrite"
+  | "contextWindow";
+
+/**
+ * Per-field provenance record. `source: "unknown"` marks a value that exists
+ * but has no recorded origin; it is strictly distinct from a missing value,
+ * which is represented by the field itself being null and having no record.
+ */
+export interface FieldProvenance {
+  source: string; // catalog/source id, or "unknown"
+  upstreamKey: string | null;
+  currency: string | null; // null for token-denominated fields (context)
+  unit: string | null; // e.g. "USD_per_million_tokens" | "tokens"
+  observedAt: string | null; // trusted upstream quote time; null = unknown
+  firstObservedAt: string | null;
+}
+
+export type PricingProvenance = Partial<Record<PriceFieldKey, FieldProvenance>>;
 
 export interface TokenPricing {
   inputPerMillion: number | null;
@@ -103,6 +130,24 @@ export interface DataQualitySummary {
   effort_token_diff_known?: boolean;
   low_sample_warning?: boolean;
   window_days?: number;
+  // Package C breakdown fields: verified-billed vs token-priced portions are
+  // recorded separately and never merged into a single opaque figure.
+  billed_sample_count?: number;
+  token_priced_sample_count?: number;
+  billed_amount_usd?: number | null;
+  token_priced_amount_usd?: number | null;
+  // Verified effort tier (declared/template tier) is stored separately from
+  // observed token usage; neither overwrites the other (design sec.2.4).
+  verified_effort?: string | null;
+  observed_tokens?: {
+    avg_input: number | null;
+    avg_output: number | null;
+    avg_reasoning: number | null;
+  } | null;
+  // Per-metric eligibility under the rolling 30-day window.
+  measured_eligible_rasc?: boolean;
+  measured_eligible_p50?: boolean;
+  sample_window_expires_at?: string | null;
 }
 
 export interface StandardizedModelCostRecord {

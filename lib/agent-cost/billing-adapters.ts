@@ -54,11 +54,15 @@ function getEffectivePrices(
   priceCacheWrite: number;
   usedCacheFallback: boolean;
 } | null {
+  // Package C: negative or non-finite prices are rejected outright, never
+  // silently treated as 0.
   if (
     pricing.inputPerMillion === null ||
     pricing.outputPerMillion === null ||
     !Number.isFinite(pricing.inputPerMillion) ||
-    !Number.isFinite(pricing.outputPerMillion)
+    !Number.isFinite(pricing.outputPerMillion) ||
+    pricing.inputPerMillion < 0 ||
+    pricing.outputPerMillion < 0
   ) {
     return null;
   }
@@ -67,14 +71,17 @@ function getEffectivePrices(
   const priceOutput = pricing.outputPerMillion;
   const usedCacheFallback = pricing.cacheReadPerMillion === null;
   const priceCacheRead =
-    pricing.cacheReadPerMillion !== null && Number.isFinite(pricing.cacheReadPerMillion)
+    pricing.cacheReadPerMillion !== null &&
+    Number.isFinite(pricing.cacheReadPerMillion) &&
+    pricing.cacheReadPerMillion >= 0
       ? pricing.cacheReadPerMillion
       : priceInput;
 
   let priceCacheWrite = 0;
   if (
     pricing.cacheWritePerMillion !== null &&
-    Number.isFinite(pricing.cacheWritePerMillion)
+    Number.isFinite(pricing.cacheWritePerMillion) &&
+    pricing.cacheWritePerMillion >= 0
   ) {
     priceCacheWrite = pricing.cacheWritePerMillion;
   } else if (adapter === "anthropic") {

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { calculateSessionCost } from "./billing-adapters";
 import type {
   AgentCostSummary,
@@ -54,6 +55,35 @@ export interface RascComputationResult {
   hasActualBilledSessions: boolean;
   allSessionsBilled: boolean;
   sources: string[];
+  /** Package C breakdown: verified-billed vs token-priced portions. */
+  billedSampleCount: number;
+  tokenPricedSampleCount: number;
+  billedAmountUsd: number | null;
+  tokenPricedAmountUsd: number | null;
+  /** Stable digest of the exact sample set (order-insensitive). */
+  sampleSetDigest: string;
+}
+
+/**
+ * Digest of the participating sample set: two sets with identical aggregate
+ * statistics but different samples produce different digests, and the same
+ * set in any order produces the same digest (Package C hash evidence).
+ */
+export function computeSampleSetDigest(
+  samples: Array<{
+    sessionId: string;
+    timestamp: string;
+    succeeded: boolean;
+    scenario: string;
+    costUsd: number;
+  }>
+): string {
+  const keys = samples
+    .map((s) =>
+      [s.sessionId, s.timestamp, s.succeeded ? "1" : "0", s.scenario, s.costUsd.toFixed(8)].join("|")
+    )
+    .sort();
+  return crypto.createHash("sha256").update(keys.join("\n")).digest("hex");
 }
 
 export function computeRealAgentStatsAndRasc(params: {
@@ -103,6 +133,11 @@ export function computeRealAgentStatsAndRasc(params: {
       hasActualBilledSessions: false,
       allSessionsBilled: false,
       sources: [],
+      billedSampleCount: 0,
+      tokenPricedSampleCount: 0,
+      billedAmountUsd: null,
+      tokenPricedAmountUsd: null,
+      sampleSetDigest: computeSampleSetDigest([]),
     };
   }
 
@@ -132,6 +167,11 @@ export function computeRealAgentStatsAndRasc(params: {
       hasActualBilledSessions: false,
       allSessionsBilled: false,
       sources: [],
+      billedSampleCount: 0,
+      tokenPricedSampleCount: 0,
+      billedAmountUsd: null,
+      tokenPricedAmountUsd: null,
+      sampleSetDigest: computeSampleSetDigest([]),
     };
   }
 
@@ -253,5 +293,22 @@ export function computeRealAgentStatsAndRasc(params: {
     hasActualBilledSessions,
     allSessionsBilled,
     sources: Array.from(sources),
+    billedSampleCount: billedSessions.filter((b) => b.isActualBilled).length,
+    tokenPricedSampleCount: billedSessions.filter((b) => !b.isActualBilled).length,
+    billedAmountUsd: billedSessions.some((b) => b.isActualBilled)
+      ? billedSessions.filter((b) => b.isActualBilled).reduce((acc, b) => acc + b.costUsd, 0)
+      : null,
+    tokenPricedAmountUsd: billedSessions.some((b) => !b.isActualBilled)
+      ? billedSessions.filter((b) => !b.isActualBilled).reduce((acc, b) => acc + b.costUsd, 0)
+      : null,
+    sampleSetDigest: computeSampleSetDigest(
+      billedSessions.map((b) => ({
+        sessionId: b.session.sessionId,
+        timestamp: b.session.timestamp,
+        succeeded: b.session.succeeded,
+        scenario: b.session.scenario,
+        costUsd: b.costUsd,
+      }))
+    ),
   };
 }
