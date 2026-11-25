@@ -1,5 +1,5 @@
-import crypto from "node:crypto";
 import { calculateSessionCost } from "./billing-adapters";
+import { sha256Hex } from "./sha256";
 import type {
   AgentCostSummary,
   AgentScenario,
@@ -83,7 +83,7 @@ export function computeSampleSetDigest(
       [s.sessionId, s.timestamp, s.succeeded ? "1" : "0", s.scenario, s.costUsd.toFixed(8)].join("|")
     )
     .sort();
-  return crypto.createHash("sha256").update(keys.join("\n")).digest("hex");
+  return sha256Hex(keys.join("\n"));
 }
 
 export function computeRealAgentStatsAndRasc(params: {
