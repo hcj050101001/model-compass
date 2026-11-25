@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { eq, and, gt, ne, desc, sql } from "drizzle-orm";
+import { eq, and, ne, desc, sql } from "drizzle-orm";
 import { assertSchemaCompatible, getDb } from "@/lib/database";
 import {
   benchmarkMeasurements,
