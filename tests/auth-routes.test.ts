@@ -2,6 +2,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getRelativeURL } from "next/dist/shared/lib/router/utils/relativize-url";
 import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,6 +28,18 @@ function loginRequest(value: string): Request {
     method: "POST",
     body: JSON.stringify({ password: value }),
   });
+}
+
+function streamedLoginRequest(body: Uint8Array): Request {
+  const chunks = [body.subarray(0, 21), body.subarray(21, 32), body.subarray(32)];
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  const init: RequestInit & { duplex: "half" } = { method: "POST", body: stream, duplex: "half" };
+  return new Request(`${origin}/api/auth/login`, init);
 }
 
 function signedSession(payload: object): string {
@@ -66,10 +79,19 @@ describe("production auth configuration", () => {
     ["SESSION_SECRET", "a0b1c2d3e4f5"],
     ["SESSION_SECRET", "dev-fallback-secret-change-in-prod"],
     ["SESSION_SECRET", "abcdefghijklmnop".repeat(2)],
+    ["SESSION_SECRET", "123456789012345678901234567890ab"],
+    ["SESSION_SECRET", "abcdefghijklmnopqrstuvwxyz123456"],
+    ["SESSION_SECRET", "qwertyuiopasdfghjklzxcvbnm123456"],
+    ["SESSION_SECRET", "987654321098765432109876543210ab"],
+    ["SESSION_SECRET", "ZYXWVUTSRQPONMLKJIHGFEDCBA123456"],
     ["SESSION_SECRET", password],
     ["ACCESS_PASSWORD", undefined],
     ["ACCESS_PASSWORD", "a0b1c2d3e4f5"],
     ["ACCESS_PASSWORD", "replace-me-with-a-shared-password"],
+    ["ADMIN_TOKEN", "short"],
+    ["ADMIN_TOKEN", "replace-me-with-an-independent-admin-token"],
+    ["ADMIN_TOKEN", password],
+    ["ADMIN_TOKEN", sessionSecret],
   ])("rejects invalid %s at startup and closes protected paths (%#)", async (name, value) => {
     vi.stubEnv(name, value);
     expect(register).toThrow(startupHalt);
@@ -80,6 +102,11 @@ describe("production auth configuration", () => {
     }
     expect((await login(loginRequest(password))).status).toBe(503);
     await expect(createSessionToken()).rejects.toThrow(name);
+  });
+
+  it.each([undefined, ""])("allows startup with an unset or empty ADMIN_TOKEN (%#)", (value) => {
+    vi.stubEnv("ADMIN_TOKEN", value);
+    expect(register).not.toThrow();
   });
 
   it("requires both credentials even when public reads are enabled", async () => {
@@ -129,6 +156,22 @@ describe("viewer access", () => {
     expect(await verifySessionToken(session)).toEqual({ valid: false });
   });
 
+  it.each([["payload", 0], ["signature", 1]] as const)("rejects a session with a tampered %s", async (_name, index) => {
+    const parts = (await createSessionToken()).split(".");
+    const segment = parts[index];
+    parts[index] = `${segment[0] === "A" ? "B" : "A"}${segment.slice(1)}`;
+    const token = parts.join(".");
+    expect(await verifySessionToken(token)).toEqual({ valid: false });
+    const request = new NextRequest(`${origin}/api/models`, {
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
+    });
+    expect((await middleware(request)).status).toBe(401);
+  });
+
+  it.each(["", "abc", "a.b.c", `a.${"A".repeat(44)}`])("rejects a malformed session (%#)", async (token) => {
+    expect(await verifySessionToken(token)).toEqual({ valid: false });
+  });
+
   it("issues a secure viewer cookie, permits protected reads and clears the cookie on logout", async () => {
     const response = await login(loginRequest(password));
     expect(response.status).toBe(200);
@@ -161,19 +204,91 @@ describe("viewer access", () => {
     expect(getLoginReturnPath(loginUrl.searchParams.get("next"))).toBe(path);
   });
 
-  it("falls back to the homepage for a return URL outside the site", () => {
-    expect(getLoginReturnPath("https://other.example/settings")).toBe("/");
+  it("keeps the login redirect relative at the forwarded origin", async () => {
+    const listenerUrl = "http://localhost:3100/compare?model=a";
+    const forwardedOrigin = "https://model-compass.example:8443";
+    const forwarded = new URL(forwardedOrigin);
+    const response = await middleware(new NextRequest(listenerUrl, {
+      headers: { "x-forwarded-proto": forwarded.protocol.slice(0, -1), "x-forwarded-host": forwarded.host },
+    }));
+    expect(response.status).toBe(307);
+    // Next's router applies this conversion to the middleware response before sending it.
+    const location = getRelativeURL(response.headers.get("location") ?? "", listenerUrl);
+    expect(location).toBe("/login?next=%2Fcompare%3Fmodel%3Da");
+    expect(new URL(location, forwardedOrigin).href).toBe(`${forwardedOrigin}/login?next=%2Fcompare%3Fmodel%3Da`);
   });
 
-  it("rejects a wrong password without setting a cookie", async () => {
-    const response = await login(loginRequest("incorrect"));
-    expect(response.status).toBe(401);
-    expect(response.headers.has("set-cookie")).toBe(false);
+  it.each(["/login", "/login/", "/login//", "/api/auth/logout", "/api/models", "/%61pi/models"])(
+    "falls back to the homepage for a login or API return path %s",
+    (path) => expect(getLoginReturnPath(path)).toBe("/"),
+  );
+
+  it.each([null, "", "https://other.example/settings", "//evil.example/x", "/\\evil.example", "/%2f%2fevil.example"])(
+    "falls back to the homepage for an invalid return path %s",
+    (path) => expect(getLoginReturnPath(path)).toBe("/"),
+  );
+
+  it("preserves an internal return path with a query", () => {
+    expect(getLoginReturnPath("/settings?tab=x")).toBe("/settings?tab=x");
+  });
+
+  it("delays each failed password attempt and never sets a cookie", async () => {
+    vi.stubEnv("ACCESS_PASSWORD", `${password}\uFFFD`);
+    vi.useFakeTimers();
+    try {
+      for (const value of ["incorrect", password, `${password}\uD800`]) {
+        const completed = vi.fn<(response: Response) => void>();
+        const pending = login(loginRequest(value));
+        void pending.then(completed);
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.advanceTimersByTimeAsync(299);
+        expect(completed).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(completed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 401 }));
+        const response = await pending;
+        expect(response.headers.has("set-cookie")).toBe(false);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejects a login body over the byte limit before issuing a cookie", async () => {
     const response = await login(loginRequest("多".repeat(1500)));
     expect(response.status).toBe(413);
+    expect(response.headers.has("set-cookie")).toBe(false);
+  });
+
+  it.each([
+    ["a valid password split across chunks", 0, 200],
+    ["exactly 4096 bytes", 4096, 200],
+    ["4097 bytes", 4097, 413],
+  ] as const)("handles a streamed login with %s", async (_description, byteLength, status) => {
+    const json = JSON.stringify({ password });
+    const body = new TextEncoder().encode(json.padEnd(byteLength, " "));
+    if (byteLength) expect(body.byteLength).toBe(byteLength);
+    const response = await login(streamedLoginRequest(body));
+    expect(response.status).toBe(status);
+    expect(response.cookies.has(SESSION_COOKIE_NAME)).toBe(status === 200);
+    if (status === 413) expect(response.headers.has("set-cookie")).toBe(false);
+  });
+});
+
+describe("public reads when PRIVATE_MODE=false", () => {
+  beforeEach(() => vi.stubEnv("PRIVATE_MODE", "false"));
+
+  it.each(["/compare", "/api/models"])("allows anonymous requests to %s", async (path) => {
+    const response = await middleware(new NextRequest(`${origin}${path}`));
+    expect(response.headers.get("x-middleware-next")).toBe("1");
+  });
+
+  it.each(["arbitrary password", undefined])("allows public login without issuing a cookie (%#)", async (value) => {
+    const request = value === undefined
+      ? new Request(`${origin}/api/auth/login`, { method: "POST" })
+      : loginRequest(value);
+    const response = await login(request);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, privateMode: false });
     expect(response.headers.has("set-cookie")).toBe(false);
   });
 });
@@ -194,11 +309,11 @@ describe.each(["true", "false"])("sync and upload when PRIVATE_MODE=%s", (mode) 
     expect(runSyncJob).not.toHaveBeenCalled();
   });
 
-  it.each([undefined, password, sessionSecret])("disables sync when the admin credential is unavailable or reused (%#)", async (value) => {
+  it.each([undefined, "", "short", "replace-me-with-an-independent-admin-token", password, sessionSecret])("disables sync when the admin credential is unavailable, weak, or reused (%#)", async (value) => {
     vi.stubEnv("ADMIN_TOKEN", value);
     const request = new Request(`${origin}/api/admin/sync`, {
       method: "POST",
-      headers: { "x-admin-token": value ?? adminToken },
+      headers: { "x-admin-token": value || adminToken },
     });
     expect((await sync(request)).status).toBe(403);
     expect(runSyncJob).not.toHaveBeenCalled();

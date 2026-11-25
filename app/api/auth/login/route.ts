@@ -7,8 +7,10 @@ import {
   sessionCookieOptions,
 } from "@/lib/auth";
 import { getAuthConfigError, isPrivateMode } from "@/lib/auth-config";
+import { credentialsMatch } from "@/lib/credentials-match";
 
 const MAX_LOGIN_BODY_BYTES = 4 * 1024;
+const FAILED_LOGIN_DELAY_MS = 300;
 const LoginSchema = z.object({
   password: z.string().min(1),
 });
@@ -53,7 +55,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Password is required" }, { status: 400 });
   }
 
-  if (parsed.data.password !== process.env.ACCESS_PASSWORD) {
+  const expectedPassword = process.env.ACCESS_PASSWORD;
+  if (!expectedPassword || !credentialsMatch(parsed.data.password, expectedPassword)) {
+    await new Promise<void>((resolve) => setTimeout(resolve, FAILED_LOGIN_DELAY_MS));
     return NextResponse.json({ error: "Invalid access password" }, { status: 401 });
   }
 

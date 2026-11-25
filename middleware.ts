@@ -40,7 +40,8 @@ export async function middleware(request: NextRequest) {
     );
   }
 
-  const redirect = new URL("/login", request.url);
+  // skipMiddlewareUrlNormalize preserves the listener origin so Next emits a relative Location.
+  const redirect = new URL("/login", new URL(request.url).origin);
   redirect.searchParams.set("next", `${pathname}${search}`);
   return NextResponse.redirect(redirect);
 }

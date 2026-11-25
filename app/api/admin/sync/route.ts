@@ -1,10 +1,7 @@
-import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
+import { getAdminTokenConfigError } from "@/lib/auth-config";
+import { credentialsMatch } from "@/lib/credentials-match";
 import { runSyncJob } from "@/lib/sync/engine";
-
-function tokenDigest(token: string): Buffer {
-  return createHash("sha256").update(token).digest();
-}
 
 export async function POST(request: Request) {
   const adminHeader = request.headers.get("x-admin-token");
@@ -13,9 +10,8 @@ export async function POST(request: Request) {
   if (
     !adminHeader ||
     !expectedToken ||
-    expectedToken === process.env.ACCESS_PASSWORD ||
-    expectedToken === process.env.SESSION_SECRET ||
-    !timingSafeEqual(tokenDigest(adminHeader), tokenDigest(expectedToken))
+    getAdminTokenConfigError(expectedToken) ||
+    !credentialsMatch(adminHeader, expectedToken)
   ) {
     return NextResponse.json(
       { error: "Admin authorization required" },
