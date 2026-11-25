@@ -7,6 +7,7 @@ import { createClient, type Client } from "@libsql/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   EXPECTED_SCHEMA_VERSION,
+  MIGRATIONS,
   SchemaCompatibilityError,
   assertSchemaCompatible,
   getSchemaVersion,
@@ -95,7 +96,7 @@ describe("Package B: versioned migration registry", () => {
   it("initializes an empty database, is idempotent, and enforces the single-active constraint", async () => {
     const client = fileClient(makeTmpDir());
     const first = await runMigrations(client);
-    expect(first.applied).toEqual([1, 2, 3]);
+    expect(first.applied).toEqual(MIGRATIONS.map((m) => m.version));
     expect(first.version).toBe(EXPECTED_SCHEMA_VERSION);
     expect(await getSchemaVersion(client)).toBe(EXPECTED_SCHEMA_VERSION);
 
@@ -103,11 +104,11 @@ describe("Package B: versioned migration registry", () => {
     expect(second.applied).toEqual([]);
 
     await client.execute(
-      `INSERT INTO data_snapshots VALUES ('s1', 'src', '5', '2026-01-01T00:00:00Z', 0, 0, 'h1', 'active', 0);`
+      `INSERT INTO data_snapshots (id, source, benchmark_version, fetched_at, model_count, variant_count, content_hash, status, is_demo) VALUES ('s1', 'src', '5', '2026-01-01T00:00:00Z', 0, 0, 'h1', 'active', 0);`
     );
     await expect(
       client.execute(
-        `INSERT INTO data_snapshots VALUES ('s2', 'src', '5', '2026-01-01T00:00:00Z', 0, 0, 'h2', 'active', 0);`
+        `INSERT INTO data_snapshots (id, source, benchmark_version, fetched_at, model_count, variant_count, content_hash, status, is_demo) VALUES ('s2', 'src', '5', '2026-01-01T00:00:00Z', 0, 0, 'h2', 'active', 0);`
       )
     ).rejects.toThrow();
     client.close();
@@ -117,7 +118,7 @@ describe("Package B: versioned migration registry", () => {
     const client = fileClient(makeTmpDir());
     await client.executeMultiple(LEGACY_DDL);
     const res = await runMigrations(client);
-    expect(res.applied).toEqual([1, 2, 3]);
+    expect(res.applied).toEqual(MIGRATIONS.map((m) => m.version));
 
     const cols = await client.execute(`PRAGMA table_info(benchmark_measurements);`);
     const colNames = cols.rows.map((r) => String(r.name));
@@ -209,7 +210,9 @@ describe("Package B: frozen snapshot reads (application level)", () => {
         ('var_a_high', 'rel_a', 'a-high', 'model-x-high', 'Model X (High)', 'Model X (High)', 'High', 'High', 20, 'standard', 1, 0),
         ('var_b_low', 'rel_b', 'b-low', 'model-x-low-v2', 'Model X (Low)', 'Model X (Low)', 'Low', 'Low', 10, 'standard', 1, 0),
         ('var_b_high', 'rel_b', 'b-high', 'model-x-high-v2', 'Model X (High)', 'Model X (High)', 'High', 'High', 20, 'standard', 1, 0);
-      INSERT INTO data_snapshots VALUES
+      INSERT INTO data_snapshots
+        (id, source, benchmark_version, fetched_at, model_count, variant_count, content_hash, status, is_demo)
+        VALUES
         ('snap_frozen', 'artificial-analysis', '5', '2026-07-01T00:00:00Z', 2, 4, 'hashf', 'active', 0),
         ('snap_staging', 'artificial-analysis', '5', '2026-07-01T00:00:00Z', 0, 0, 'hashs', 'staging', 0);
     `);

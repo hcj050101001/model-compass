@@ -1,28 +1,38 @@
 services:
   web:
-    build: .
+    build:
+      context: .
+      target: runner
     container_name: llm-frontier-web
     restart: unless-stopped
+    user: "1001:1001"
     ports:
-      - "3100:3100"
+      - "127.0.0.1:3100:3100"
     env_file:
       - .env
     volumes:
+      # One shared persistent volume for web and worker: the SQLite
+      # database and the immutable publication files live together.
       - ./data:/app/data
 
   sync-worker:
-    build: .
+    build:
+      context: .
+      target: worker
     container_name: llm-frontier-sync
     restart: unless-stopped
+    user: "1001:1001"
     env_file:
       - .env
     volumes:
       - ./data:/app/data
+    # Migration pre-step (Packages B/C): apply the explicit migrations
+    # before the scheduler starts. The `|| true` tolerance follows the
+    # baseline semantics for local/demo startup; it is not a hard failure.
     command: >
-      sh -c 'while true; do
-        npm run db:migrate || true;
-        npx tsx scripts/sync-data.ts || true;
-        sleep $${DATA_SYNC_INTERVAL_SECONDS:-3600};
-      done'
-    depends_on:
-      - web
+      sh -c 'npm run db:migrate || true;
+        exec node --import tsx scripts/sync-worker.ts'
+    # The worker image's CMD runs the single production scheduler
+    # (scripts/sync-worker.ts), driven by DATA_SYNC_INTERVAL_MINUTES —
+    # the same value the status page displays. No shell loop, no npx,
+    # no swallowed exit codes, no dependency on the web process.

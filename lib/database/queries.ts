@@ -1,5 +1,6 @@
 import { desc, eq } from "drizzle-orm";
 import { assertSchemaCompatible, getDb } from "./index";
+import { getSyncIntervalMinutes } from "@/lib/ops/sync-config";
 import {
   benchmarkMeasurements,
   dataSnapshots,
@@ -295,10 +296,9 @@ export async function getSyncStatusInfo() {
     snapshots,
     demoModeEnv: process.env.DEMO_MODE === "true",
     hasApiKey: Boolean(process.env.AA_API_KEY?.trim()),
-    syncIntervalMinutes: Number.parseInt(
-      process.env.DATA_SYNC_INTERVAL_MINUTES ?? "60",
-      10
-    ),
+    // Single scheduler-config source (lib/ops/sync-config.ts): the same
+    // value drives the production worker's actual schedule.
+    syncIntervalMinutes: getSyncIntervalMinutes(),
     apiTier: process.env.AA_API_TIER ?? "free",
   };
 }

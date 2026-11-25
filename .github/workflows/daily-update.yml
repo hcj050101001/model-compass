@@ -5,12 +5,106 @@ on:
     - cron: "0 2 * * *"
   workflow_dispatch:
 
+# Default: read-only. Write permission exists ONLY on the gated
+# publication job below (Package E / AC-E4).
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: model-compass-data-publication
+  cancel-in-progress: false
 
 jobs:
-  update-agent-cost-data:
+  # Verification runs entirely without write permission: key check, real
+  # sync against an isolated runner-local database, and real
+  # marker/coverage/source/timestamp/dual-file digest validation all
+  # complete before any job can obtain write permission. No real-data
+  # artifacts are uploaded anywhere in this workflow.
+  verify:
+    name: Verify real sync (read-only)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      DEMO_MODE: "false"
+      AA_API_TIER: ${{ vars.AA_API_TIER || 'free' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check AA API key is configured
+        env:
+          AA_API_KEY: ${{ secrets.AA_API_KEY }}
+        run: |
+          if [ -z "$(printf '%s' "$AA_API_KEY" | tr -d '[:space:]')" ]; then
+            echo "::error::AA_API_KEY is missing or blank; real sync cannot be verified."
+            exit 1
+          fi
+          echo "AA_API_KEY present."
+
+      - name: Prepare isolated data root
+        run: |
+          echo "DATABASE_URL=file:${{ runner.temp }}/model-compass/frontier.db" >> "$GITHUB_ENV"
+          echo "MODEL_COMPASS_DATA_DIR=${{ runner.temp }}/model-compass" >> "$GITHUB_ENV"
+
+      - name: Run database migrations
+        run: npm run db:migrate
+
+      - name: Run real data sync (isolated database)
+        env:
+          AA_API_KEY: ${{ secrets.AA_API_KEY }}
+        run: npm run sync:data
+
+      - name: Validate snapshot (marker, coverage, source, timestamps, digest)
+        run: npm run snapshot:verify
+
+      - name: Validate dual distribution files match the registered digest
+        run: |
+          node -e '
+            const fs = require("fs");
+            const crypto = require("crypto");
+            const dir = process.env.MODEL_COMPASS_DATA_DIR;
+            const main = fs.readFileSync(dir + "/standardized-models.json", "utf8");
+            const payload = JSON.parse(main);
+            if (payload.is_demo) throw new Error("distribution file is a demo snapshot");
+            if (!payload.snapshot_id) throw new Error("distribution file has no snapshot_id");
+            const digest = crypto.createHash("sha256").update(main).digest("hex");
+            const historyPath = dir + "/history/" + payload.generated_at.slice(0, 10) + ".json";
+            const history = fs.readFileSync(historyPath, "utf8");
+            if (history !== main) throw new Error("history distribution file differs from main file");
+            console.log("Dual-file digest validation ok:", payload.snapshot_id, digest);
+          '
+
+      - name: Run automated unit tests
+        run: npm test
+
+  # Publication is gated by the AA_GIT_PUBLICATION_APPROVED repository
+  # variable (default: unset/off). While unapproved this job never runs:
+  # the workflow performs no distribution, no push, and uploads no
+  # real-data artifacts. When approved, it re-runs the same real sync in
+  # an isolated root and publishes only the verified bytes, serialized by
+  # the workflow-level concurrency group.
+  publish:
+    name: Publish verified snapshot (approval-gated)
+    needs: verify
+    if: ${{ vars.AA_GIT_PUBLICATION_APPROVED == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      DEMO_MODE: "false"
+      AA_API_TIER: ${{ vars.AA_API_TIER || 'free' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,37 +118,28 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Apply explicit database migrations
+      - name: Prepare isolated data root
+        run: |
+          echo "DATABASE_URL=file:${{ runner.temp }}/model-compass/frontier.db" >> "$GITHUB_ENV"
+          echo "MODEL_COMPASS_DATA_DIR=${{ runner.temp }}/model-compass" >> "$GITHUB_ENV"
+
+      - name: Run database migrations
         run: npm run db:migrate
 
-      - name: Run deterministic data sync & RASC/EAC pipeline
+      - name: Run real data sync (isolated database)
         env:
           AA_API_KEY: ${{ secrets.AA_API_KEY }}
-          AA_API_TIER: ${{ vars.AA_API_TIER || 'free' }}
-          DEMO_MODE: "false"
         run: npm run sync:data
 
-      - name: Validate standardized JSON output deterministically
-        run: |
-          node -e '
-            const fs = require("fs");
-            const data = JSON.parse(fs.readFileSync("data/standardized-models.json", "utf8"));
-            if (!Array.isArray(data.models) || data.models.length === 0) {
-              throw new Error("standardized-models.json has no models");
-            }
-            for (const m of data.models) {
-              if (!m.model_id || !m.data_quality || !m.agent_cost || !m.pricing) {
-                throw new Error("Invalid standardized record: " + JSON.stringify(m));
-              }
-            }
-            console.log("Validated standardized-models.json:", data.models.length, "models");
-          '
+      - name: Validate snapshot before publishing
+        run: npm run snapshot:verify
 
-      - name: Run automated unit tests
-        run: npm test
-
-      - name: Commit and push updated snapshots
+      - name: Copy verified bytes to distribution paths and push
         run: |
+          cp "$MODEL_COMPASS_DATA_DIR/standardized-models.json" data/standardized-models.json
+          DATE_TAG=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("data/standardized-models.json","utf8")).generated_at.slice(0,10))')
+          mkdir -p data/history
+          cp "$MODEL_COMPASS_DATA_DIR/standardized-models.json" "data/history/${DATE_TAG}.json"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/standardized-models.json data/history/

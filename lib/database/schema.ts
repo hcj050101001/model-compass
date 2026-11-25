@@ -71,6 +71,24 @@ export const dataSnapshots = sqliteTable(
     contentHash: text("content_hash").notNull(),
     status: text("status").notNull(), // 'staging' | 'active' | 'archived' | 'failed'
     isDemo: integer("is_demo", { mode: "boolean" }).notNull().default(false),
+    // Package D: multi-turn template version (e.g. "mt-v2") that produced
+    // this snapshot's simulated costs. Nullable: pre-D snapshots carry
+    // legacy derived values and are reported as legacy fallback.
+    templateVersion: text("template_version"),
+    // Publication record (Package E): set only by the activation transaction.
+    // publishedAt is produced by the DB clock inside that transaction;
+    // fileGeneratedAt is when the immutable export bytes were generated;
+    // sourceDataAt is the trusted upstream data timestamp (null when the
+    // upstream provides no trustworthy field); exportSha256/exportPath
+    // register the immutable publication file (relative to the data dir).
+    publishedAt: text("published_at"),
+    fileGeneratedAt: text("file_generated_at"),
+    sourceDataAt: text("source_data_at"),
+    exportSha256: text("export_sha256"),
+    exportPath: text("export_path"),
+    // Fetch completion time of the latest successful verification fetch
+    // (success/no_change) for this snapshot; failures never advance it.
+    lastVerifiedFetchAt: text("last_verified_fetch_at"),
   },
   (table) => [index("idx_snapshots_status").on(table.status)]
 );
@@ -148,6 +166,12 @@ export const syncJobs = sqliteTable("sync_jobs", {
   errorMessage: text("error_message"),
   rateLimitRemaining: integer("rate_limit_remaining"),
   rateLimitReset: text("rate_limit_reset"),
+  // Package E: structured failure/interruption reason (e.g. "interrupted"
+  // for stranded running jobs taken over after lease expiry), the lease
+  // owner that ran the job, and the snapshot the job published/verified.
+  reasonCode: text("reason_code"),
+  owner: text("owner"),
+  snapshotId: text("snapshot_id"),
 });
 
 export const syncLocks = sqliteTable("sync_locks", {
