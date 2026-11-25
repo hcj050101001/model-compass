@@ -1,5 +1,6 @@
 import { findSuperiorAlternatives, type AlternativeOptions } from "./alternatives";
 import { dominates } from "./pareto";
+import { getDeveloperAgentCost } from "@/lib/utils/format";
 import type { MeasurementRow, ParetoPoint } from "./types";
 
 export interface TargetPoint extends ParetoPoint {
@@ -10,23 +11,18 @@ export function toTargetPoints(
   rows: MeasurementRow[],
   costGetter?: (row: MeasurementRow) => number | null
 ): TargetPoint[] {
-  const hasAnyRealRasc =
-    !costGetter &&
-    rows.some(
-      (r) =>
-        (r.dataQuality.level === "A" || r.dataQuality.level === "B") &&
-        r.agentCost.rasc !== null
-    );
-
+  // Unified cost basis (design sec.2.5): without an explicit getter every
+  // row is priced by the SAME multi-turn simulation input used by sync,
+  // home, API and export (standard tier). There is no global switch to
+  // measured RASC when any row happens to carry one — measured and
+  // simulated amounts are never mixed in one candidate set. The stored
+  // estimated_cost is only a legacy fallback for rows the current template
+  // cannot price (e.g. missing prices on legacy snapshots).
   const getCost =
     costGetter ??
     ((r: MeasurementRow) => {
-      if (hasAnyRealRasc) {
-        return r.dataQuality.level === "A" || r.dataQuality.level === "B"
-          ? r.agentCost.rasc
-          : null;
-      }
-      return r.agentCost.estimated_cost;
+      const dev = getDeveloperAgentCost(r, "standard");
+      return dev ? dev.totalUsd : r.agentCost.estimated_cost;
     });
 
   return rows

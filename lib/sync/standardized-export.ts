@@ -3,6 +3,11 @@ import path from "node:path";
 import type { StandardizedModelCostRecord } from "@/lib/agent-cost/types";
 import type { MeasurementRow } from "@/lib/analytics/types";
 import { calculateParetoFrontier } from "@/lib/analytics/pareto";
+import {
+  LEGACY_TEMPLATE_VERSION,
+  MULTI_TURN_TEMPLATE_VERSION,
+} from "@/lib/agent-cost/developer-cost";
+import { getDeveloperAgentCost } from "@/lib/utils/format";
 
 export function toStandardizedRecord(row: MeasurementRow): StandardizedModelCostRecord {
   return {
@@ -52,29 +57,55 @@ export function exportStandardizedSnapshotFiles(params: {
     { indexVersion, allowedQualityLevels: ["A", "B"] }
   );
 
+  // Estimated frontier on the unified cost basis (design sec.2.5): every
+  // candidate is priced by the same standard-tier multi-turn simulation
+  // (getDeveloperAgentCost) used by the chart, leaderboard, compare and
+  // frontier API — never by a stored legacy amount. Candidates are the
+  // full (all-vendor) scope of this snapshot; consumers comparing against
+  // a vendor-scoped frontier must recompute under that same scope.
+  // estimated_eac_model_ids therefore means: variant IDs on the standard,
+  // positive-estimate, same-index-version, finite-score, all-vendor
+  // Pareto frontier.
   const estimatedFrontier = calculateParetoFrontier(
     rows
-      .filter(
-        (r) =>
-          r.agentCost.estimated_cost !== null &&
-          r.intelligenceScore !== null &&
-          r.dataQuality.level !== "D"
-      )
-      .map((r) => ({
-        id: r.variantId,
-        cost: r.agentCost.estimated_cost as number,
-        score: r.intelligenceScore as number,
-        indexVersion: r.indexVersion,
-      })),
+      .map((r) => {
+        if (r.intelligenceScore === null || !Number.isFinite(r.intelligenceScore)) {
+          return null;
+        }
+        const dev = getDeveloperAgentCost(r, "standard");
+        if (!dev || dev.totalUsd <= 0) return null;
+        return {
+          id: r.variantId,
+          cost: dev.totalUsd,
+          score: r.intelligenceScore,
+          indexVersion: r.indexVersion,
+        };
+      })
+      .filter((p): p is NonNullable<typeof p> => p !== null),
     { indexVersion }
   );
 
+  const snapshotId = rows[0]?.snapshotId ?? null;
   const payload = {
     schema_version: "2.0.0",
     generated_at: generatedAt,
+    snapshot_id: snapshotId,
     index_version: indexVersion,
     is_demo: isDemo,
     model_count: records.length,
+    // Cost-basis metadata (design sec.2.5): simulated amounts in this
+    // export are USD per simulated task at the standard task profile
+    // under the multi-turn template version below; stored agent_cost
+    // values without a snapshot template version are legacy fallbacks.
+    cost_metadata: {
+      snapshot_id: snapshotId,
+      cost_mode: "eac",
+      cost_unit: "USD/simulated task",
+      task_profile: "standard",
+      template_version: MULTI_TURN_TEMPLATE_VERSION,
+      legacy_template_version: LEGACY_TEMPLATE_VERSION,
+      candidate_scope: "all",
+    },
     pareto_frontiers: {
       real_rasc_model_ids: Array.from(realFrontier.frontierIds),
       estimated_eac_model_ids: Array.from(estimatedFrontier.frontierIds),

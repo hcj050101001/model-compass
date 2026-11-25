@@ -123,12 +123,9 @@ export function getXAxisValue(
       return row.agentCost.p50;
     }
     case "eac": {
-      if (
-        (row.dataQuality.level === "A" || row.dataQuality.level === "B") &&
-        row.agentCost.rasc !== null
-      ) {
-        return row.agentCost.rasc;
-      }
+      // Single selection entry point (design sec.2.5): the eac axis is ALWAYS
+      // the specified-tier multi-turn simulation estimate. There is no RASC
+      // branch here — measured values live only on the rasc / real_p50 axes.
       const dev = getDeveloperAgentCost(row, taskProfile);
       return dev ? dev.totalUsd : null;
     }
@@ -172,7 +169,7 @@ export function getXAxisLabel(
       case "real_p50":
         return "真实 Agent 会话成本中位数 P50 (USD / 会话 — 实测)";
       case "eac":
-        return "标准化 Agent 估算成本 EAC (USD / 任务 — 估算)";
+        return "标准化 Agent 估算成本 EAC (USD / 模拟任务 — 估算)";
       case "custom_agent":
         return "自定义 Agent 使用成本 (USD / 任务 — 估算)";
       case "input_price":
@@ -189,9 +186,9 @@ export function getXAxisLabel(
     case "real_p50":
       return "Real Agent Session Median P50 (USD / Session — Measured)";
     case "eac":
-      return "Est. Agent Session Cost ($)";
+      return "Standardized Agent Cost EAC (USD / Simulated Task — Estimated)";
     case "custom_agent":
-      return "Custom Agent Cost (USD / Task — Estimated)";
+      return "Custom Agent Cost (USD / Simulated Task — Estimated)";
     case "input_price":
       return "Input Price (USD / 1M Tokens)";
     case "output_price":
