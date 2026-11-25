@@ -24,6 +24,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Apply explicit database migrations
+        run: npm run db:migrate
+
       - name: Run deterministic data sync & RASC/EAC pipeline
         env:
           AA_API_KEY: ${{ secrets.AA_API_KEY }}

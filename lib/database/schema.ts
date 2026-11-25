@@ -105,6 +105,21 @@ export const benchmarkMeasurements = sqliteTable(
     dataSourceType: text("data_source_type").notNull().default("unavailable"),
     dataSourcesJson: text("data_sources_json"),
     dataUpdatedAt: text("data_updated_at"),
+    // Package B (migration 2): frozen release metadata captured at commit
+    // time so later dimension renames never rewrite snapshot history.
+    frozenCreatorName: text("frozen_creator_name"),
+    frozenCreatorSlug: text("frozen_creator_slug"),
+    frozenReleaseName: text("frozen_release_name"),
+    frozenReleaseDate: text("frozen_release_date"),
+    frozenContextWindow: integer("frozen_context_window"),
+    frozenDisplayName: text("frozen_display_name"),
+    frozenEffortNormalized: text("frozen_effort_normalized"),
+    // DB-only reconciliation marker; never exposed via public API/JSON.
+    legacyBackfill: integer("legacy_backfill").notNull().default(0),
+    // Package C (migration 3): per-field pricing provenance + quality evidence.
+    fieldSourcesJson: text("field_sources_json"),
+    qualityEvidenceJson: text("quality_evidence_json"),
+    firstObservedAt: text("first_observed_at"),
     snapshotId: text("snapshot_id")
       .notNull()
       .references(() => dataSnapshots.id),
@@ -115,6 +130,12 @@ export const benchmarkMeasurements = sqliteTable(
     index("idx_measurements_version").on(table.indexVersion),
   ]
 );
+
+export const schemaMigrations = sqliteTable("schema_migrations", {
+  version: integer("version").primaryKey(),
+  name: text("name").notNull(),
+  appliedAt: text("applied_at").notNull(),
+});
 
 export const syncJobs = sqliteTable("sync_jobs", {
   id: text("id").primaryKey(),

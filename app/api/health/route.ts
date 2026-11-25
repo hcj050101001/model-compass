@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getActiveSnapshot } from "@/lib/database/queries";
+import { SchemaCompatibilityError } from "@/lib/database";
 
 export async function GET() {
   try {
@@ -12,11 +13,15 @@ export async function GET() {
       timestamp: new Date().toISOString(),
     });
   } catch (err) {
+    // Desensitized (Package B): never echo raw underlying error text.
+    if (err instanceof SchemaCompatibilityError) {
+      return NextResponse.json(
+        { status: "error", error: "Service unavailable" },
+        { status: 503 }
+      );
+    }
     return NextResponse.json(
-      {
-        status: "error",
-        error: err instanceof Error ? err.message : "Database unavailable",
-      },
+      { status: "error", error: "Database unavailable" },
       { status: 500 }
     );
   }
