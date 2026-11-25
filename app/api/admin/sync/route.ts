@@ -1,21 +1,25 @@
-import { cookies } from "next/headers";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
-import { SESSION_COOKIE_NAME, verifySessionToken } from "@/lib/auth";
 import { runSyncJob } from "@/lib/sync/engine";
+
+function tokenDigest(token: string): Buffer {
+  return createHash("sha256").update(token).digest();
+}
 
 export async function POST(request: Request) {
   const adminHeader = request.headers.get("x-admin-token");
   const expectedToken = process.env.ADMIN_TOKEN;
-  const hasValidToken = Boolean(expectedToken && adminHeader === expectedToken);
 
-  const cookieStore = await cookies();
-  const sessionToken = cookieStore.get(SESSION_COOKIE_NAME)?.value;
-  const session = await verifySessionToken(sessionToken);
-
-  if (!hasValidToken && !session.valid) {
+  if (
+    !adminHeader ||
+    !expectedToken ||
+    expectedToken === process.env.ACCESS_PASSWORD ||
+    expectedToken === process.env.SESSION_SECRET ||
+    !timingSafeEqual(tokenDigest(adminHeader), tokenDigest(expectedToken))
+  ) {
     return NextResponse.json(
       { error: "Admin authorization required" },
-      { status: 401 }
+      { status: 403 }
     );
   }
 

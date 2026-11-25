@@ -1,23 +1,15 @@
 import { NextResponse, type NextRequest } from "next/server";
-import {
-  isPrivateMode,
-  SESSION_COOKIE_NAME,
-  verifySessionToken,
-} from "./lib/auth";
+import { SESSION_COOKIE_NAME, verifySessionToken } from "./lib/auth";
+import { getAuthConfigError, isPrivateMode } from "./lib/auth-config";
 
 const PUBLIC_PATHS = new Set([
   "/login",
-  "/api/auth/login",
   "/api/auth/logout",
   "/api/health",
 ]);
 
 export async function middleware(request: NextRequest) {
-  if (!isPrivateMode()) {
-    return NextResponse.next();
-  }
-
-  const { pathname } = request.nextUrl;
+  const { pathname, search } = request.nextUrl;
   if (
     PUBLIC_PATHS.has(pathname) ||
     pathname.startsWith("/_next/") ||
@@ -26,13 +18,13 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // Allow admin token header for programmatic admin sync
-  if (pathname === "/api/admin/sync") {
-    const adminHeader = request.headers.get("x-admin-token");
-    const expected = process.env.ADMIN_TOKEN;
-    if (expected && adminHeader === expected) {
-      return NextResponse.next();
-    }
+  if (getAuthConfigError()) {
+    return NextResponse.json({ error: "Authentication unavailable" }, { status: 503 });
+  }
+
+  // The sync handler owns authorization for this route in both modes.
+  if (!isPrivateMode() || pathname === "/api/admin/sync") {
+    return NextResponse.next();
   }
 
   const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
@@ -48,17 +40,12 @@ export async function middleware(request: NextRequest) {
     );
   }
 
-  const forwardedProto = request.headers.get("x-forwarded-proto");
-  const forwardedHost =
-    request.headers.get("x-forwarded-host") ?? request.headers.get("host");
-  const origin = forwardedHost
-    ? `${forwardedProto ?? "https"}://${forwardedHost}`
-    : request.nextUrl.origin;
-  const loginUrl = new URL("/login", origin);
-  loginUrl.searchParams.set("next", pathname);
-  return NextResponse.redirect(loginUrl);
+  const redirect = new URL("/login", request.url);
+  redirect.searchParams.set("next", `${pathname}${search}`);
+  return NextResponse.redirect(redirect);
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  // Next clones request bodies for Edge middleware. Send login and disabled uploads to their handlers directly.
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|api/auth/login/?$|api/agent-sessions/upload/?$).*)"],
 };

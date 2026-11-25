@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Compass, Languages, Lock } from "lucide-react";
 import { useLocale } from "@/components/i18n/LocaleProvider";
+import { getLoginReturnPath } from "@/lib/login-return-path";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -27,7 +28,8 @@ export default function LoginPage() {
         setError(data.error ?? t("authFailed"));
         return;
       }
-      router.push("/");
+      const next = new URLSearchParams(window.location.search).get("next");
+      router.replace(getLoginReturnPath(next));
       router.refresh();
     } catch {
       setError(t("networkError"));

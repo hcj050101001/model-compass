@@ -1,8 +1,5 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { RefreshCw } from "lucide-react";
 import { useLocale } from "@/components/i18n/LocaleProvider";
 import { DemoBanner } from "./layout/DemoBanner";
 import { Footer } from "./layout/Footer";
@@ -55,28 +52,8 @@ export function SettingsClient({
   statusInfo,
   privateMode,
 }: SettingsClientProps) {
-  const router = useRouter();
   const { t } = useLocale();
-  const [syncing, setSyncing] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
   const snap = statusInfo.activeSnapshot;
-
-  async function triggerSync() {
-    setSyncing(true);
-    setMessage(null);
-    try {
-      const res = await fetch("/api/admin/sync", { method: "POST" });
-      const data = await res.json();
-      setMessage(
-        `Sync status: ${data.status}${data.errorMessage ? ` — ${data.errorMessage}` : ""}`
-      );
-      router.refresh();
-    } catch {
-      setMessage("Sync failed due to network error.");
-    } finally {
-      setSyncing(false);
-    }
-  }
 
   return (
     <div className="min-h-screen flex flex-col bg-bg-primary text-text-primary">
@@ -86,35 +63,14 @@ export function SettingsClient({
         isDemo={snap?.isDemo}
         indexVersion={snap?.benchmarkVersion}
         privateMode={privateMode}
-        onSyncComplete={() => router.refresh()}
       />
 
       <main className="mx-auto w-full max-w-[1280px] flex-1 space-y-4 px-3 py-4 text-xs sm:space-y-6 sm:px-4 sm:py-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 className="text-lg font-bold text-text-primary">
-              {t("settingsTitle")}
-            </h1>
-            <p className="text-text-muted">{t("settingsDesc")}</p>
-          </div>
-          {privateMode && (
-            <button
-              type="button"
-              onClick={triggerSync}
-              disabled={syncing}
-              className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-accent px-3.5 py-2.5 font-semibold text-slate-950 hover:bg-accent-hover active:scale-[0.99] disabled:opacity-50 sm:w-auto sm:rounded-lg sm:py-2"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${syncing ? "animate-spin" : ""}`} />
-              <span>{t("runSyncNow")}</span>
-            </button>
-          )}
+        <div>
+          <h1 className="text-lg font-bold text-text-primary">
+            {t("settingsTitle")}
+          </h1>
         </div>
-
-        {message && (
-          <div className="rounded-lg border border-border bg-bg-secondary px-4 py-2.5 text-text-primary">
-            {message}
-          </div>
-        )}
 
         {/* Configuration Summary */}
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -185,16 +141,6 @@ export function SettingsClient({
               </tbody>
             </table>
           </div>
-        </div>
-
-        {/* Methodology & Compliance */}
-        <div className="rounded-xl border border-border bg-bg-secondary p-4 space-y-2 leading-relaxed text-text-secondary">
-          <h2 className="text-sm font-semibold text-text-primary">
-            {t("methodologyTitle")}
-          </h2>
-          <p>{t("methodologyP1")}</p>
-          <p>{t("methodologyP2")}</p>
-          <p>{t("methodologyP3")}</p>
         </div>
       </main>
 

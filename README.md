@@ -28,7 +28,7 @@
 ```bash
 npm install
 cp .env.example .env
-# Edit .env and set ACCESS_PASSWORD, ADMIN_TOKEN, SESSION_SECRET (and AA_API_KEY when ready)
+# Generate ACCESS_PASSWORD and SESSION_SECRET independently as shown in .env.example.
 npm run db:migrate
 npm run seed:demo
 npm run dev
@@ -45,7 +45,7 @@ Open `http://127.0.0.1:3100`.
    AA_API_TIER=free
    DEMO_MODE=false
    ```
-3. Run `npm run sync:data` (or click **Sync** in the UI) and restart the server.
+3. Run `npm run sync:data` from the operator environment. The settings page shows sync status.
 
 ## Testing & Verification
 
@@ -58,4 +58,4 @@ npm run build
 
 ## Attribution & License Compliance
 
-Intelligence scores and official cost-per-task data are sourced from [Artificial Analysis](https://artificialanalysis.ai/). Free-tier API data is intended for personal/internal analysis and must display visible attribution to Artificial Analysis; public redistribution of the full dataset is restricted without explicit permission. Private Mode (`PRIVATE_MODE=true`) is enabled by default.
+Intelligence scores and official cost-per-task data are sourced from [Artificial Analysis](https://artificialanalysis.ai/). Free-tier API data is intended for personal/internal analysis and must display visible attribution to Artificial Analysis; public redistribution of the full dataset is restricted without explicit permission. Production requires an explicit `PRIVATE_MODE` and independent viewer and session credentials. Set `PRIVATE_MODE=true` to require viewer login.

@@ -1,15 +1,18 @@
+import { getAuthConfigError } from "./auth-config";
+
 export const SESSION_COOKIE_NAME = "llm_frontier_session";
+export const SESSION_MAX_AGE = 7 * 24 * 60 * 60;
+const SESSION_VERSION = 1;
+const SESSION_ROLE = "viewer";
 
-function getSecret(): string {
-  return (
-    process.env.SESSION_SECRET ||
-    process.env.ACCESS_PASSWORD ||
-    "dev-fallback-secret-change-in-prod"
-  );
-}
-
-export function isPrivateMode(): boolean {
-  return process.env.PRIVATE_MODE !== "false";
+export function sessionCookieOptions(maxAge: number) {
+  return {
+    httpOnly: true,
+    sameSite: "lax" as const,
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge,
+  };
 }
 
 function toBase64Url(bytes: Uint8Array): string {
@@ -20,7 +23,7 @@ function toBase64Url(bytes: Uint8Array): string {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-function fromBase64Url(str: string): Uint8Array {
+function fromBase64Url(str: string): Uint8Array<ArrayBuffer> {
   const padded = str.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((str.length + 3) % 4);
   const binary = atob(padded);
   const bytes = new Uint8Array(binary.length);
@@ -30,50 +33,57 @@ function fromBase64Url(str: string): Uint8Array {
   return bytes;
 }
 
-async function signHmac(data: string): Promise<string> {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
+async function sessionKey(usage: "sign" | "verify"): Promise<CryptoKey> {
+  const secret = process.env.SESSION_SECRET;
+  const configError = getAuthConfigError();
+  if (configError || !secret) throw new Error(configError ?? "SESSION_SECRET is required.");
+
+  return crypto.subtle.importKey(
     "raw",
-    enc.encode(getSecret()),
+    new TextEncoder().encode(secret),
     { name: "HMAC", hash: "SHA-256" },
     false,
-    ["sign"]
+    [usage]
   );
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(data));
-  return toBase64Url(new Uint8Array(sig));
 }
 
-export async function createSessionToken(role = "viewer"): Promise<string> {
-  const exp = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days
-  const payload = JSON.stringify({ role, exp });
+export async function createSessionToken(): Promise<string> {
+  const exp = Date.now() + SESSION_MAX_AGE * 1000;
+  const payload = JSON.stringify({ v: SESSION_VERSION, role: SESSION_ROLE, exp });
   const enc = new TextEncoder();
   const encodedPayload = toBase64Url(enc.encode(payload));
-  const sig = await signHmac(encodedPayload);
-  return `${encodedPayload}.${sig}`;
+  const signature = await crypto.subtle.sign("HMAC", await sessionKey("sign"), enc.encode(encodedPayload));
+  return `${encodedPayload}.${toBase64Url(new Uint8Array(signature))}`;
 }
 
 export async function verifySessionToken(
   token: string | undefined | null
-): Promise<{ valid: boolean; role?: string }> {
+): Promise<{ valid: true; role: typeof SESSION_ROLE } | { valid: false }> {
   if (!token) return { valid: false };
-  const parts = token.split(".");
-  if (parts.length !== 2) return { valid: false };
-  const [encodedPayload, sig] = parts;
-  const expectedSig = await signHmac(encodedPayload);
-  if (sig.length !== expectedSig.length) return { valid: false };
-  let diff = 0;
-  for (let i = 0; i < sig.length; i++) {
-    diff |= sig.charCodeAt(i) ^ expectedSig.charCodeAt(i);
-  }
-  if (diff !== 0) return { valid: false };
+  const parts = /^([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{43})$/.exec(token);
+  if (!parts) return { valid: false };
+  const [, encodedPayload, signature] = parts;
 
   try {
+    const verified = await crypto.subtle.verify(
+      "HMAC",
+      await sessionKey("verify"),
+      fromBase64Url(signature),
+      new TextEncoder().encode(encodedPayload)
+    );
+    if (!verified) return { valid: false };
+
     const decoded = new TextDecoder().decode(fromBase64Url(encodedPayload));
-    const parsed = JSON.parse(decoded) as { role?: string; exp?: number };
-    if (!parsed.exp || Date.now() > parsed.exp) {
+    const parsed = JSON.parse(decoded);
+    if (
+      parsed?.v !== SESSION_VERSION ||
+      parsed.role !== SESSION_ROLE ||
+      !Number.isFinite(parsed.exp) ||
+      parsed.exp <= Date.now()
+    ) {
       return { valid: false };
     }
-    return { valid: true, role: parsed.role ?? "viewer" };
+    return { valid: true, role: SESSION_ROLE };
   } catch {
     return { valid: false };
   }

@@ -1,5 +1,5 @@
 import { getSyncStatusInfo } from "@/lib/database/queries";
-import { isPrivateMode } from "@/lib/auth";
+import { isPrivateMode } from "@/lib/auth-config";
 import { SettingsClient } from "@/components/SettingsClient";
 
 export const dynamic = "force-dynamic";

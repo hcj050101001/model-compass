@@ -1,5 +1,5 @@
 import { getActiveMeasurements, getSyncStatusInfo } from "@/lib/database/queries";
-import { isPrivateMode } from "@/lib/auth";
+import { isPrivateMode } from "@/lib/auth-config";
 import { DashboardClient } from "@/components/DashboardClient";
 
 export const dynamic = "force-dynamic";

@@ -144,17 +144,8 @@ export const messages = {
     addVariantPicker: "添加模型档位到对比列表",
     selectVariantPlaceholder: "请选择模型档位...",
     pairwiseTitle: "两两支配与权衡关系",
-    settingsTitle: "数据同步、快照与评测口径",
-    settingsDesc: "数据管道可观测性、API 额度追踪与授权署名说明。",
-    runSyncNow: "立即手动同步",
+    settingsTitle: "数据同步状态",
     recentJobs: "最近同步任务记录",
-    methodologyTitle: "评测口径与数据合规说明",
-    methodologyP1:
-      "1. 单一智力口径：核心智力、编程与智能体指数全部来自 Artificial Analysis，并严格按 intelligence_index_version 隔离，禁止跨版本混合比较。",
-    methodologyP2:
-      "2. 真实 Agent 成本 (RASC) 与估算成本 (EAC) 严格隔离：默认真实模式仅统计 A/B 级实测用户 Agent 会话数据；缺少真实数据时，可使用基于官方 Token 单价的 C 级标准化估算成本 EAC，禁止混合计算帕累托前沿。",
-    methodologyP3:
-      "3. 免费 API 署名与私人访问控制：遵循 Artificial Analysis 数据使用条款，保留署名链接且默认启用 Private Mode 访问控制。",
     detailClickHint: "点击数据点查看详情与边际收益 →",
     simpleSubtitle: "AI 模型实力与花费对比",
     simpleSearchPlaceholder: "搜索模型或厂商...",
@@ -348,18 +339,8 @@ export const messages = {
     addVariantPicker: "Add Variant to Comparison",
     selectVariantPlaceholder: "Select a model variant...",
     pairwiseTitle: "Pairwise Dominance & Trade-off Analysis",
-    settingsTitle: "Sync Status, Snapshots & Methodology",
-    settingsDesc:
-      "Data pipeline observability, API quota status, and licensing attribution.",
-    runSyncNow: "Run Manual Sync Now",
+    settingsTitle: "Sync Status",
     recentJobs: "Recent Sync Jobs",
-    methodologyTitle: "Methodology & Data Compliance",
-    methodologyP1:
-      "1. Single-Source Intelligence Axis: All primary Intelligence, Coding, and Agentic scores are sourced exclusively from Artificial Analysis and isolated by intelligence_index_version.",
-    methodologyP2:
-      "2. Strict Isolation of RASC vs. EAC: Real-world Agent Session Cost (RASC) uses only Grade A/B verified agent session logs. Estimated Agent Cost (EAC, Grade C) uses transparent token-price templates and is never mixed into real-cost Pareto frontiers.",
-    methodologyP3:
-      "3. Free Tier Attribution & Private Mode: Artificial Analysis free API data requires visible attribution pointing to https://artificialanalysis.ai/ and Private Mode access control is enabled by default.",
     detailClickHint: "Click point for full details & marginal returns →",
     simpleSubtitle: "AI Model Intelligence & Cost",
     simpleSearchPlaceholder: "Search models or providers...",

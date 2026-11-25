@@ -1,5 +1,5 @@
 import { getActiveMeasurements } from "@/lib/database/queries";
-import { isPrivateMode } from "@/lib/auth";
+import { isPrivateMode } from "@/lib/auth-config";
 import { ComparePageClient } from "@/components/ComparePageClient";
 
 export const dynamic = "force-dynamic";
