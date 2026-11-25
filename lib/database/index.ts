@@ -91,7 +91,13 @@ export async function ensureSchema(): Promise<void> {
       variant_count INTEGER NOT NULL,
       content_hash TEXT NOT NULL,
       status TEXT NOT NULL,
-      is_demo INTEGER NOT NULL DEFAULT 0
+      is_demo INTEGER NOT NULL DEFAULT 0,
+      published_at TEXT,
+      file_generated_at TEXT,
+      source_data_at TEXT,
+      export_sha256 TEXT,
+      export_path TEXT,
+      last_verified_fetch_at TEXT
     );`,
     `CREATE INDEX IF NOT EXISTS idx_snapshots_status ON data_snapshots(status);`,
     `CREATE TABLE IF NOT EXISTS benchmark_measurements (
@@ -135,7 +141,10 @@ export async function ensureSchema(): Promise<void> {
       rejected_count INTEGER NOT NULL DEFAULT 0,
       error_message TEXT,
       rate_limit_remaining INTEGER,
-      rate_limit_reset TEXT
+      rate_limit_reset TEXT,
+      reason_code TEXT,
+      owner TEXT,
+      snapshot_id TEXT
     );`,
     `CREATE TABLE IF NOT EXISTS sync_locks (
       lock_key TEXT PRIMARY KEY,
@@ -167,6 +176,42 @@ export async function ensureSchema(): Promise<void> {
       await client.execute(
         `ALTER TABLE benchmark_measurements ADD COLUMN ${col} ${def};`
       );
+    }
+  }
+
+  // Package E additive columns: publication record on data_snapshots and
+  // structured reason/owner/snapshot columns on sync_jobs. (T2's versioned
+  // migration framework was not yet integrated on this branch; these follow
+  // the same additive, idempotent pattern as the measurement columns above
+  // and must be folded into the numbered migration sequence at integration.)
+  const additiveColumns: Array<[string, Array<[string, string]>]> = [
+    [
+      "data_snapshots",
+      [
+        ["published_at", "TEXT"],
+        ["file_generated_at", "TEXT"],
+        ["source_data_at", "TEXT"],
+        ["export_sha256", "TEXT"],
+        ["export_path", "TEXT"],
+        ["last_verified_fetch_at", "TEXT"],
+      ],
+    ],
+    [
+      "sync_jobs",
+      [
+        ["reason_code", "TEXT"],
+        ["owner", "TEXT"],
+        ["snapshot_id", "TEXT"],
+      ],
+    ],
+  ];
+  for (const [table, columns] of additiveColumns) {
+    const info = await client.execute(`PRAGMA table_info(${table});`);
+    const cols = new Set(info.rows.map((r) => String(r.name ?? "")));
+    for (const [col, def] of columns) {
+      if (!cols.has(col)) {
+        await client.execute(`ALTER TABLE ${table} ADD COLUMN ${col} ${def};`);
+      }
     }
   }
   if (existingCols.has("cost_per_task_usd")) {

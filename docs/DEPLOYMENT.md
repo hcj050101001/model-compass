@@ -21,10 +21,46 @@
    ```
    Reload Caddy after DNS A record points to the server IP.
 
-## Option B: Docker Compose
+## Option B: Docker Compose (web + worker images)
+
+Two images are built from the same Dockerfile: the web image (target
+`runner`, Next.js standalone) and the worker image (target `worker`,
+production dependencies only — installed at build time; the running
+container never downloads packages). Both run as UID 1001 and share one
+persistent volume at `/app/data` holding the SQLite database and the
+immutable publication files (`snapshots/<snapshot-id>.json`).
+
+Bootstrap sequence (each step must succeed before the next):
 
 ```bash
 cp .env.example .env
-# Edit .env with strong secrets and AA_API_KEY
-docker compose up -d --build
+# Edit .env: strong secrets, AA_API_KEY, DEMO_MODE=false,
+# DATABASE_URL=file:/app/data/frontier.db (absolute path)
+docker compose build
+docker compose run --rm --no-deps sync-worker npm run preflight
+docker compose run --rm --no-deps sync-worker npm run db:migrate
+docker compose run --rm --no-deps sync-worker npm run sync:data
+docker compose run --rm --no-deps sync-worker npm run snapshot:verify
+docker compose up -d web
+curl -fsS http://127.0.0.1:3100/api/health   # 200 {"status":"ok"} (liveness only)
+curl -fsS http://127.0.0.1:3100/api/ready    # 200 {"status":"ready"} after bootstrap
+docker compose up -d sync-worker
 ```
+
+Probes: `/api/health` answers process liveness only. `/api/ready`
+returns 503 with a reason code until the active snapshot is a verified,
+non-demo, coverage-passing publication whose registered file is readable
+and whose last successful verification fetch is within
+`MAX_SNAPSHOT_AGE_MINUTES` (1440). Gate traffic on `/api/ready`, not on
+`/api/health`.
+
+Scheduling: `scripts/sync-worker.ts` in the worker container is the only
+production scheduler. `DATA_SYNC_INTERVAL_MINUTES` drives both its
+schedule and the status page display. The GitHub workflow's publication
+job is a gated distribution path (`AA_GIT_PUBLICATION_APPROVED`, default
+off), not a site scheduler; do not run host cron/systemd sync timers
+alongside the worker.
+
+Note: the systemd timer mentioned in Option A predates the worker; when
+the container deployment is used, the worker replaces it — never run
+both.
