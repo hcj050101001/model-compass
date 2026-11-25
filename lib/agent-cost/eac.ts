@@ -33,6 +33,13 @@ export function getPresetAgentParams(preset: TaskComplexity): CustomAgentParams 
 export const DEFAULT_AGENT_PARAMS: CustomAgentParams = getPresetAgentParams("medium");
 
 /**
+ * Legacy single-pass template identifier (the implicit v1 predating the
+ * multi-turn template "mt-v2" in developer-cost.ts). Used to label
+ * custom_agent amounts and legacy derived values in API/export payloads.
+ */
+export const LEGACY_AGENT_TEMPLATE_VERSION = "legacy-v1";
+
+/**
  * Standardized Estimated Agent Cost (EAC):
  * EAC = (U * P_input + C * P_cache_read + W * P_cache_write + O * P_output) / 1_000_000
  *
@@ -54,11 +61,15 @@ export function calculateEAC(
     | "cacheWriteTokens"
   >
 ): EacCalculationResult | null {
+  // Required prices: missing, non-finite or negative prices are rejected
+  // (Package D boundary rules); 0 is a legal price.
   if (
     pricing.inputPerMillion === null ||
     pricing.outputPerMillion === null ||
     !Number.isFinite(pricing.inputPerMillion) ||
-    !Number.isFinite(pricing.outputPerMillion)
+    !Number.isFinite(pricing.outputPerMillion) ||
+    pricing.inputPerMillion < 0 ||
+    pricing.outputPerMillion < 0
   ) {
     return null;
   }
@@ -73,16 +84,23 @@ export function calculateEAC(
     ? Math.max(0, params.outputTokens)
     : Math.max(0, params.outputTokens) + Math.max(0, params.reasoningTokens);
 
-  const usedCacheFallback =
-    cachedReadTokens > 0 && pricing.cacheReadPerMillion === null;
-  const effectiveCacheReadPrice =
-    pricing.cacheReadPerMillion !== null && Number.isFinite(pricing.cacheReadPerMillion)
-      ? pricing.cacheReadPerMillion
-      : pricing.inputPerMillion;
-  const effectiveCacheWritePrice =
-    pricing.cacheWritePerMillion !== null && Number.isFinite(pricing.cacheWritePerMillion)
-      ? pricing.cacheWritePerMillion
-      : 0;
+  // Cache prices: invalid (negative / non-finite) values are treated as
+  // missing, never as discounts; a valid 0 is kept.
+  const cacheReadValid =
+    pricing.cacheReadPerMillion !== null &&
+    Number.isFinite(pricing.cacheReadPerMillion) &&
+    pricing.cacheReadPerMillion >= 0;
+  const cacheWriteValid =
+    pricing.cacheWritePerMillion !== null &&
+    Number.isFinite(pricing.cacheWritePerMillion) &&
+    pricing.cacheWritePerMillion >= 0;
+  const usedCacheFallback = cachedReadTokens > 0 && !cacheReadValid;
+  const effectiveCacheReadPrice = cacheReadValid
+    ? (pricing.cacheReadPerMillion as number)
+    : pricing.inputPerMillion;
+  const effectiveCacheWritePrice = cacheWriteValid
+    ? (pricing.cacheWritePerMillion as number)
+    : 0;
 
   const estimatedCostUsd =
     (uncachedInputTokens * pricing.inputPerMillion +
@@ -90,6 +108,10 @@ export function calculateEAC(
       cacheWriteTokens * effectiveCacheWritePrice +
       billableOutputTokens * pricing.outputPerMillion) /
     1_000_000;
+
+  if (!Number.isFinite(estimatedCostUsd) || estimatedCostUsd < 0) {
+    return null;
+  }
 
   return {
     estimatedCostUsd,

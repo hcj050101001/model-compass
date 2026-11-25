@@ -91,7 +91,8 @@ export async function ensureSchema(): Promise<void> {
       variant_count INTEGER NOT NULL,
       content_hash TEXT NOT NULL,
       status TEXT NOT NULL,
-      is_demo INTEGER NOT NULL DEFAULT 0
+      is_demo INTEGER NOT NULL DEFAULT 0,
+      template_version TEXT
     );`,
     `CREATE INDEX IF NOT EXISTS idx_snapshots_status ON data_snapshots(status);`,
     `CREATE TABLE IF NOT EXISTS benchmark_measurements (
@@ -168,6 +169,17 @@ export async function ensureSchema(): Promise<void> {
         `ALTER TABLE benchmark_measurements ADD COLUMN ${col} ${def};`
       );
     }
+  }
+  // Package D (append-only): per-snapshot multi-turn template version.
+  // NOTE for integration: T2's versioned migration framework lands first;
+  // this column add must be re-expressed there as the next appended
+  // migration number after T2's maximum, with identical column semantics.
+  const snapshotInfo = await client.execute(`PRAGMA table_info(data_snapshots);`);
+  const snapshotCols = new Set(snapshotInfo.rows.map((r) => String(r.name ?? "")));
+  if (!snapshotCols.has("template_version")) {
+    await client.execute(
+      `ALTER TABLE data_snapshots ADD COLUMN template_version TEXT;`
+    );
   }
   if (existingCols.has("cost_per_task_usd")) {
     await client.execute(
