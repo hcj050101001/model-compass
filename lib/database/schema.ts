@@ -71,6 +71,10 @@ export const dataSnapshots = sqliteTable(
     contentHash: text("content_hash").notNull(),
     status: text("status").notNull(), // 'staging' | 'active' | 'archived' | 'failed'
     isDemo: integer("is_demo", { mode: "boolean" }).notNull().default(false),
+    // Package D: multi-turn template version (e.g. "mt-v2") that produced
+    // this snapshot's simulated costs. Nullable: pre-D snapshots carry
+    // legacy derived values and are reported as legacy fallback.
+    templateVersion: text("template_version"),
   },
   (table) => [index("idx_snapshots_status").on(table.status)]
 );

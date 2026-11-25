@@ -20,7 +20,10 @@ import { enrichWithOpenRouter } from "@/lib/data-sources/openrouter/adapter";
 import { enrichWithLiteLLMPricing } from "@/lib/data-sources/pricing/litellm-adapter";
 import { ingestAllAgentSessions } from "@/lib/data-sources/agent-sessions";
 import { DEMO_INDEX_VERSION, getDemoAAModels } from "@/lib/data-sources/demo/dataset";
-import { calculateDeveloperAgentCost } from "@/lib/agent-cost/developer-cost";
+import {
+  calculateDeveloperAgentCost,
+  MULTI_TURN_TEMPLATE_VERSION,
+} from "@/lib/agent-cost/developer-cost";
 import { computeRealAgentStatsAndRasc } from "@/lib/agent-cost/rasc";
 import { classifyDataQuality } from "@/lib/agent-cost/quality";
 import type {
@@ -499,6 +502,9 @@ export async function commitSnapshotAtomically(params: {
       contentHash,
       status: "staging",
       isDemo,
+      // Package D: persist the multi-turn template version per snapshot so
+      // API/export can report which template produced the simulated costs.
+      templateVersion: MULTI_TURN_TEMPLATE_VERSION,
     });
 
     for (const m of bundle.measurements) {

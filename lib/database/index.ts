@@ -211,6 +211,7 @@ export interface MigrationDefinition {
  *   1 = base schema (Package B; legacy cost columns are preserved, never dropped)
  *   2 = frozen release metadata + legacy backfill + single-active constraint (Package B)
  *   3 = per-field pricing provenance + quality evidence columns (Package C)
+ *   4 = per-snapshot multi-turn template version (Package D)
  */
 export const MIGRATIONS: MigrationDefinition[] = [
   {
@@ -291,6 +292,13 @@ export const MIGRATIONS: MigrationDefinition[] = [
            AND (input_price_per_million IS NOT NULL OR output_price_per_million IS NOT NULL
              OR cache_read_price_per_million IS NOT NULL OR cache_write_price_per_million IS NOT NULL);`
       );
+    },
+  },
+  {
+    version: 4,
+    name: "snapshot-template-version",
+    apply: async (tx) => {
+      await addColumnIfMissing(tx, "data_snapshots", "template_version", "TEXT");
     },
   },
 ];
