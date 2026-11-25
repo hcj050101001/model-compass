@@ -1,45 +1,42 @@
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
 import { promisify } from "node:util";
-import { beforeAll, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import { buildFingerprintPath, buildInputs, getBuildFingerprint } from "../scripts/record-build-fingerprint.mjs";
 
 const buildIdPath = ".next/BUILD_ID";
 const usesPrebuiltBundle = process.env.MODEL_COMPASS_TEST_PRODUCTION === "1";
-const buildInputs = [
-  "app", "components", "config", "lib", "public", "types",
-  "instrumentation.ts", "middleware.ts", "next.config.ts", "postcss.config.mjs",
-  "tailwind.config.ts", "tsconfig.json", "package.json", "package-lock.json",
-  ".env", ".env.local", ".env.production", ".env.production.local",
-];
 let previousBuildId: string | undefined;
 
-function findNewerBuildInput(path: string, builtAt: number): string | undefined {
-  const stats = statSync(path, { throwIfNoEntry: false });
-  if (!stats) return;
-  if (stats.mtimeMs > builtAt) return path;
-  if (stats.isDirectory()) {
-    for (const entry of readdirSync(path)) {
-      const newerInput = findNewerBuildInput(join(path, entry), builtAt);
-      if (newerInput) return newerInput;
-    }
+// Freshness is judged by content fingerprint only: the fingerprint recorded
+// by postbuild (scripts/record-build-fingerprint.mjs) must equal the
+// fingerprint of the current build inputs. Any added, deleted, or modified
+// input — including a deleted top-level file the old mtime guard skipped —
+// changes the fingerprint and marks the prebuilt bundle stale.
+function assertPrebuiltFresh(): void {
+  if (!existsSync(buildIdPath)) {
+    throw new Error("Production build missing. Run npm run test:production.");
+  }
+  let recorded: unknown;
+  try {
+    recorded = (JSON.parse(readFileSync(buildFingerprintPath, "utf8")) as { fingerprint?: unknown }).fingerprint;
+  } catch {
+    recorded = undefined;
+  }
+  if (typeof recorded !== "string" || recorded !== getBuildFingerprint()) {
+    throw new Error(
+      `Production build is stale (recorded build fingerprint in ${buildFingerprintPath} does not match the current build inputs). Run npm run test:production to rebuild.`,
+    );
   }
 }
 
 beforeAll(async () => {
   if (usesPrebuiltBundle) {
-    const buildId = statSync(buildIdPath, { throwIfNoEntry: false });
-    if (!buildId) {
-      throw new Error("Production build missing. Run npm run test:production.");
-    }
-    for (const input of buildInputs) {
-      const newerInput = findNewerBuildInput(input, buildId.mtimeMs);
-      if (newerInput) {
-        throw new Error(`Production build is stale (${newerInput} is newer than ${buildIdPath}). Run npm run test:production to rebuild.`);
-      }
-    }
+    assertPrebuiltFresh();
     return;
   }
 
@@ -58,6 +55,71 @@ beforeAll(async () => {
 it.skipIf(usesPrebuiltBundle)("replaces an existing build before testing current source", () => {
   expect(previousBuildId).toBeDefined();
   expect(readFileSync(buildIdPath, "utf8")).not.toBe(previousBuildId);
+});
+
+describe("build fingerprint freshness", () => {
+  function makeInputFixture(): string {
+    const root = mkdtempSync(join(tmpdir(), "build-fingerprint-"));
+    writeFileSync(join(root, "package.json"), "{}\n");
+    mkdirSync(join(root, "lib"), { recursive: true });
+    writeFileSync(join(root, "lib", "a.ts"), "export const a = 1;\n");
+    writeFileSync(join(root, "lib", "b.ts"), "export const b = 2;\n");
+    return root;
+  }
+
+  it("changes the fingerprint when a build input is modified, added, or deleted", () => {
+    const root = makeInputFixture();
+    try {
+      const original = getBuildFingerprint(root);
+
+      // Modify an existing input file.
+      writeFileSync(join(root, "lib", "a.ts"), "export const a = 99;\n");
+      expect(getBuildFingerprint(root)).not.toBe(original);
+      writeFileSync(join(root, "lib", "a.ts"), "export const a = 1;\n");
+      expect(getBuildFingerprint(root)).toBe(original);
+
+      // Add a new file inside a listed directory input.
+      writeFileSync(join(root, "lib", "c.ts"), "export const c = 3;\n");
+      expect(getBuildFingerprint(root)).not.toBe(original);
+      rmSync(join(root, "lib", "c.ts"));
+      expect(getBuildFingerprint(root)).toBe(original);
+
+      // Delete a file inside a listed directory input.
+      rmSync(join(root, "lib", "b.ts"));
+      expect(getBuildFingerprint(root)).not.toBe(original);
+      writeFileSync(join(root, "lib", "b.ts"), "export const b = 2;\n");
+      expect(getBuildFingerprint(root)).toBe(original);
+
+      // Add then delete a top-level file input (the old mtime guard silently
+      // skipped missing paths, so deleting middleware.ts went undetected).
+      expect(buildInputs).toContain("middleware.ts");
+      writeFileSync(join(root, "middleware.ts"), "export {};\n");
+      expect(getBuildFingerprint(root)).not.toBe(original);
+      rmSync(join(root, "middleware.ts"));
+      expect(getBuildFingerprint(root)).toBe(original);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // The freshness check runs in beforeAll, before `next start` is spawned, so
+  // a throw here is what guarantees no service starts on a stale bundle.
+  it.skipIf(!usesPrebuiltBundle)(
+    "rejects a tampered recorded fingerprint before any service starts and restores it",
+    () => {
+      const originalBytes = readFileSync(buildFingerprintPath, "utf8");
+      const { fingerprint } = JSON.parse(originalBytes) as { fingerprint: string };
+      const tampered = `${fingerprint[0] === "0" ? "1" : "0"}${fingerprint.slice(1)}`;
+      try {
+        writeFileSync(buildFingerprintPath, `${JSON.stringify({ fingerprint: tampered })}\n`);
+        expect(() => assertPrebuiltFresh()).toThrow(/stale/);
+      } finally {
+        writeFileSync(buildFingerprintPath, originalBytes);
+      }
+      expect(readFileSync(buildFingerprintPath, "utf8")).toBe(originalBytes);
+      expect(() => assertPrebuiltFresh()).not.toThrow();
+    },
+  );
 });
 
 it(

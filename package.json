@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev -p 3100",
     "build": "next build",
-    "postbuild": "rm -rf .next/standalone/.next/static && cp -r .next/static .next/standalone/.next/static && mkdir -p .next/standalone/node_modules/geoip-country/data && cp -r node_modules/geoip-country/data/* .next/standalone/node_modules/geoip-country/data/",
+    "postbuild": "rm -rf .next/standalone/.next/static && cp -r .next/static .next/standalone/.next/static && mkdir -p .next/standalone/node_modules/geoip-country/data && cp -r node_modules/geoip-country/data/* .next/standalone/node_modules/geoip-country/data/ && node scripts/record-build-fingerprint.mjs",
     "start": "next start -p 3100 -H 127.0.0.1",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",

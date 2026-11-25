@@ -38,7 +38,10 @@ function hasPredictableRun(value: string, ring: string, stride: number, offset: 
 }
 
 function hasPredictableSequence(value: string): boolean {
-  const maxStride = Math.floor(value.length / PREDICTABLE_RUN_LENGTH);
+  // An 8-element run at stride s and offset o spans o + 7s + 1 <= value.length,
+  // so the widest feasible stride is floor((L - 1) / 7), not floor(L / 8):
+  // no trailing filler is needed after the last run character.
+  const maxStride = Math.floor((value.length - 1) / (PREDICTABLE_RUN_LENGTH - 1));
   for (let stride = 1; stride <= maxStride; stride++) {
     for (let offset = 0; offset < stride; offset++) {
       for (const ring of SEQUENCE_RINGS) {

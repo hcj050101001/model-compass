@@ -203,6 +203,177 @@ describe("auth configuration at startup", () => {
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining("SESSION_SECRET"));
   });
 
+  it.each([9, 10, 11, 12, 13, 14, 15, 16])(
+    "rejects woven alphabet and decimal runs at stride %i",
+    (stride) => {
+      for (const run of ["abcdefgh", "01234567"]) {
+        vi.stubEnv("SESSION_SECRET", `V6*sW+2Q@${weaveSequence(run, stride, stride - 1)}~pN9!uY=4H#LjX3B`);
+        expect(getAuthConfigError(), `run ${run}, stride ${stride}`).toContain("SESSION_SECRET");
+      }
+    },
+  );
+
+  it.each([9, 12, 16])(
+    "rejects separated and mixed-case woven runs at stride %i through startup",
+    (stride) => {
+      const track = Array.from(weaveSequence("abcdefgh", stride, 0));
+      const sequence = track
+        .map((char, index) => (Math.floor(index / stride) % 2 === 0 ? char.toUpperCase() : char))
+        .join("-");
+      vi.stubEnv("SESSION_SECRET", `V6*sW+2Q@${sequence}~pN9!uY=4H#LjX3B`);
+      expect(register).toThrow(startupHalt);
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining("SESSION_SECRET"));
+    },
+  );
+
+  // Fix-round-5 review reproductions, included verbatim in geometry: both
+  // were accepted under the old floor(L / 8) stride bound and must now be
+  // rejected. weaveSequence cannot express them (it always appends a full
+  // filler block after the last run character and its filler rows cap the
+  // stride at 17), so they are built by placing the run characters at
+  // offset + k * stride in a credential of exactly the reviewed length,
+  // filled from the same filler rows.
+  function weaveRunExactLength(run: string, stride: number, offset: number, length: number): string {
+    const fillerPool = fillerRows.join("");
+    const chars = new Array<string>(length);
+    let fillerIndex = 0;
+    for (let position = 0; position < length; position++) {
+      const laneIndex = position >= offset && (position - offset) % stride === 0
+        ? (position - offset) / stride
+        : -1;
+      if (laneIndex >= 0 && laneIndex < run.length) {
+        chars[position] = run[laneIndex];
+      } else {
+        chars[position] = fillerPool[fillerIndex % fillerPool.length];
+        fillerIndex++;
+      }
+    }
+    return chars.join("");
+  }
+
+  it("rejects the review sample: 57-char stride-8 offset-0 woven 'abcdefgh' with no trailing filler", () => {
+    const credential = weaveRunExactLength("abcdefgh", 8, 0, 57);
+    expect(credential).toHaveLength(57);
+    expect(credential[56]).toBe("h");
+    vi.stubEnv("SESSION_SECRET", credential);
+    expect(getAuthConfigError()).toContain("SESSION_SECRET");
+  });
+
+  it("rejects the review sample: 150-char secret with a run woven at stride 20 (stride 18 also rejected)", () => {
+    const stride20 = weaveRunExactLength("abcdefgh", 20, 0, 150);
+    expect(stride20).toHaveLength(150);
+    expect(stride20[140]).toBe("h");
+    vi.stubEnv("SESSION_SECRET", stride20);
+    expect(getAuthConfigError()).toContain("SESSION_SECRET");
+    const stride18 = weaveRunExactLength("abcdefgh", 18, 0, 150);
+    expect(stride18).toHaveLength(150);
+    vi.stubEnv("SESSION_SECRET", stride18);
+    expect(getAuthConfigError()).toContain("SESSION_SECRET");
+  });
+
+  describe("exhaustive stride bound proof", () => {
+    // A run of 8 lane elements at stride s and offset o fits exactly when
+    // o + 7s <= L - 1. The detector scans every (s, o) pair with
+    // s <= floor((L - 1) / 7) and o < s; the pairs with o + 7s > L - 1 hold
+    // fewer than 8 lane elements and cannot carry an 8-run, so the feasible
+    // pairs below are the ones a woven credential could ever hide in.
+    const exhaustiveLengths = [32, 57, 60, 64, 100];
+    const proofRings: [string, string][] = [
+      ["alphabet", "abcdefghijklmnopqrstuvwxyz"],
+      ["decimal", "0123456789"],
+    ];
+    let scannedPairs = 0;
+    const exhaustiveCases: {
+      length: number;
+      stride: number;
+      offset: number;
+      construction: string;
+      value: string;
+    }[] = [];
+
+    function fillCredential(length: number, lane: Map<number, string>): string {
+      const chars = new Array<string>(length);
+      let fillerIndex = 0;
+      for (let position = 0; position < length; position++) {
+        const laneChar = lane.get(position);
+        if (laneChar !== undefined) {
+          chars[position] = laneChar;
+        } else {
+          chars[position] = fillerRows[fillerIndex % fillerRows.length][Math.floor(fillerIndex / fillerRows.length) % 16];
+          fillerIndex++;
+        }
+      }
+      return chars.join("");
+    }
+
+    for (const length of exhaustiveLengths) {
+      const maxStride = Math.floor((length - 1) / 7);
+      for (let stride = 1; stride <= maxStride; stride++) {
+        for (let offset = 0; offset < stride; offset++) {
+          scannedPairs++;
+          if (offset + 7 * stride > length - 1) continue; // Lane holds < 8 elements.
+          const elements = Math.floor((length - 1 - offset) / stride) + 1;
+          // Two rings, full-lane arithmetic progression with difference 1.
+          for (const [ringName, ring] of proofRings) {
+            const start = (offset * 7 + stride * 3) % ring.length;
+            const lane = new Map<number, string>();
+            for (let index = 0; index < elements; index++) {
+              lane.set(offset + index * stride, ring[(start + index) % ring.length]);
+            }
+            exhaustiveCases.push({
+              length, stride, offset,
+              construction: `${ringName} full-lane difference 1`,
+              value: fillCredential(length, lane),
+            });
+          }
+          // One differential construction holding exactly 8 arithmetic lane
+          // elements (difference 3); any remaining lane positions repeat the
+          // last run character, which breaks the progression (difference 0).
+          const [ringName, ring] = proofRings[0];
+          const start = (offset * 5 + stride) % ring.length;
+          const lane = new Map<number, string>();
+          let lastRunChar = "";
+          for (let index = 0; index < elements; index++) {
+            if (index < 8) lastRunChar = ring[(start + 3 * index) % ring.length];
+            lane.set(offset + index * stride, lastRunChar);
+          }
+          exhaustiveCases.push({
+            length, stride, offset,
+            construction: `${ringName} exactly-8 difference 3`,
+            value: fillCredential(length, lane),
+          });
+        }
+      }
+    }
+
+    it("enumerates the full feasible (stride, offset) space for each length", () => {
+      // Detector scan space: sum over s of s = 10 + 36 + 36 + 45 + 105 pairs.
+      expect(scannedPairs).toBe(232);
+      // Feasible pairs (o + 7s <= L - 1): 10 + 29 + 32 + 37 + 89, x3 constructions.
+      expect(exhaustiveCases).toHaveLength(197 * 3);
+      for (const length of exhaustiveLengths) {
+        const maxStride = Math.floor((length - 1) / 7);
+        // The boundary stride itself is in range and fits exactly 8 elements
+        // at offset 0; the next stride cannot fit 8 elements at any offset.
+        expect(7 * maxStride).toBeLessThanOrEqual(length - 1);
+        expect(7 * (maxStride + 1)).toBeGreaterThan(length - 1);
+        expect(exhaustiveCases.some((testCase) => testCase.length === length && testCase.stride === maxStride)).toBe(true);
+        expect(exhaustiveCases.some((testCase) => testCase.length === length && testCase.stride === maxStride + 1)).toBe(false);
+      }
+      console.info(
+        `exhaustive stride proof: lengths [${exhaustiveLengths.join(", ")}], ${scannedPairs} scanned (stride, offset) pairs, ${exhaustiveCases.length} woven constructions`,
+      );
+    });
+
+    it.each(exhaustiveCases)(
+      "rejects exhaustive L=$length stride $stride offset $offset ($construction)",
+      ({ value }) => {
+        vi.stubEnv("SESSION_SECRET", value);
+        expect(getAuthConfigError()).toContain("SESSION_SECRET");
+      },
+    );
+  });
+
   const decimalRing = "0123456789";
   const generatedSequences = [
     ["decimal", decimalRing],
@@ -251,13 +422,18 @@ describe("auth configuration at startup", () => {
     return groups;
   });
 
-  it.each(generatedSequences)(
-    "rejects $family sequences (step $step, $topology)",
-    ({ cases }) => {
-      for (const { stride, offset, format, value } of cases) {
-        vi.stubEnv("SESSION_SECRET", value);
-        expect(getAuthConfigError(), `stride ${stride}, offset ${offset}, ${format}`).toContain("SESSION_SECRET");
-      }
+  const generatedCases = generatedSequences.flatMap(({ family, step, topology, cases }) =>
+    cases.map((testCase) => ({ family, step, topology, ...testCase })),
+  );
+
+  // Per-case tests rather than one grouped loop per (family, step, topology):
+  // a single failing case must not mask the remaining cases in its group, and
+  // the test report must locate each failing case individually.
+  it.each(generatedCases)(
+    "rejects $family sequences (step $step, $topology, stride $stride, offset $offset, $format)",
+    ({ value }) => {
+      vi.stubEnv("SESSION_SECRET", value);
+      expect(getAuthConfigError()).toContain("SESSION_SECRET");
     },
   );
 
