@@ -36,3 +36,31 @@ it("evicts excess failure records and caps the overflow delay at two seconds", a
     vi.useRealTimers();
   }
 });
+
+it("evicts the oldest failures when batches with different timestamps overflow", async () => {
+  vi.resetModules();
+  const { delayFailedCredential, getRecordedFailureCount } = await import("@/lib/credentials-match");
+  vi.useFakeTimers({ now: 0 });
+  vi.stubEnv("TRUST_PROXY", "true");
+  try {
+    const headers = new Headers();
+    const older = Array.from({ length: 5 }, () => delayFailedCredential(headers));
+    await vi.advanceTimersByTimeAsync(1_000);
+    const newer = Array.from({ length: 47 }, () => delayFailedCredential(headers));
+    expect(getRecordedFailureCount()).toBe(47);
+
+    // Only the older batch's window has expired. The probe prunes expired records.
+    await vi.advanceTimersByTimeAsync(59_001);
+    const completed = vi.fn();
+    const probe = delayFailedCredential(new Headers({ "x-forwarded-for": "192.0.2.1" })).then(completed);
+    expect(getRecordedFailureCount()).toBe(47);
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(completed).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(completed).toHaveBeenCalledTimes(1);
+    await Promise.all([...older, ...newer, probe]);
+  } finally {
+    vi.unstubAllEnvs();
+    vi.useRealTimers();
+  }
+});

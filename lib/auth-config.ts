@@ -38,9 +38,9 @@ function hasPredictableRun(value: string, ring: string, stride: number, offset: 
 }
 
 function hasPredictableSequence(value: string): boolean {
-  for (let stride = 1; stride <= 3; stride++) {
-    const span = (PREDICTABLE_RUN_LENGTH - 1) * stride + 1;
-    for (let offset = 0; offset < stride && offset + span <= value.length; offset++) {
+  const maxStride = Math.floor(value.length / PREDICTABLE_RUN_LENGTH);
+  for (let stride = 1; stride <= maxStride; stride++) {
+    for (let offset = 0; offset < stride; offset++) {
       for (const ring of SEQUENCE_RINGS) {
         if (hasPredictableRun(value, ring, stride, offset)) return true;
       }
@@ -49,10 +49,23 @@ function hasPredictableSequence(value: string): boolean {
   return false;
 }
 
+function hasRepeatedCharacterRun(value: string): boolean {
+  let previousCharacter = "";
+  let runLength = 0;
+  for (const character of value) {
+    runLength = character === previousCharacter ? runLength + 1 : 1;
+    if (runLength >= PREDICTABLE_RUN_LENGTH) return true;
+    previousCharacter = character;
+  }
+  return false;
+}
+
 function isPredictableCredential(value: string): boolean {
+  if (hasRepeatedCharacterRun(value)) return true;
   const raw = value.toLowerCase();
   const alphanumeric = raw.replace(/[^a-z0-9]/g, "");
-  return hasPredictableSequence(raw) ||
+  return (alphanumeric !== value && hasRepeatedCharacterRun(alphanumeric)) ||
+    hasPredictableSequence(raw) ||
     (alphanumeric !== raw && hasPredictableSequence(alphanumeric));
 }
 

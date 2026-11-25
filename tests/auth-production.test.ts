@@ -1,18 +1,44 @@
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
 import { promisify } from "node:util";
 import { beforeAll, expect, it } from "vitest";
 
 const buildIdPath = ".next/BUILD_ID";
 const usesPrebuiltBundle = process.env.MODEL_COMPASS_TEST_PRODUCTION === "1";
+const buildInputs = [
+  "app", "components", "config", "lib", "public", "types",
+  "instrumentation.ts", "middleware.ts", "next.config.ts", "postcss.config.mjs",
+  "tailwind.config.ts", "tsconfig.json", "package.json", "package-lock.json",
+  ".env", ".env.local", ".env.production", ".env.production.local",
+];
 let previousBuildId: string | undefined;
+
+function findNewerBuildInput(path: string, builtAt: number): string | undefined {
+  const stats = statSync(path, { throwIfNoEntry: false });
+  if (!stats) return;
+  if (stats.mtimeMs > builtAt) return path;
+  if (stats.isDirectory()) {
+    for (const entry of readdirSync(path)) {
+      const newerInput = findNewerBuildInput(join(path, entry), builtAt);
+      if (newerInput) return newerInput;
+    }
+  }
+}
 
 beforeAll(async () => {
   if (usesPrebuiltBundle) {
-    if (!existsSync(buildIdPath)) {
+    const buildId = statSync(buildIdPath, { throwIfNoEntry: false });
+    if (!buildId) {
       throw new Error("Production build missing. Run npm run test:production.");
+    }
+    for (const input of buildInputs) {
+      const newerInput = findNewerBuildInput(input, buildId.mtimeMs);
+      if (newerInput) {
+        throw new Error(`Production build is stale (${newerInput} is newer than ${buildIdPath}). Run npm run test:production to rebuild.`);
+      }
     }
     return;
   }

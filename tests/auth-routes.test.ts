@@ -11,6 +11,7 @@ import { POST as login } from "@/app/api/auth/login/route";
 import { POST as logout } from "@/app/api/auth/logout/route";
 import { register } from "@/instrumentation";
 import { createSessionToken, SESSION_COOKIE_NAME, verifySessionToken } from "@/lib/auth";
+import { getAuthConfigError } from "@/lib/auth-config";
 import { getLoginReturnPath } from "@/lib/login-return-path";
 import { runSyncJob } from "@/lib/sync/engine";
 import { config, middleware } from "@/middleware";
@@ -174,64 +175,125 @@ describe("auth configuration at startup", () => {
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining(name));
   });
 
+  const fillerRows = [
+    "affcp9ezsg5cmj8r", "i2lubx6jsp6d8nfv", "wrolulah6s9nv74k", "5mnr8lyp6cj5pgo1",
+    "a4y3888tbwazohoc", "g7lo1affb8s0i53c", "3f26cpzbvw2d9mke", "kwm0aefw1r0mzlkc",
+  ];
+
+  function weaveSequence(run: string, stride: number, offset: number): string {
+    return Array.from(run, (char, row) => {
+      const filler = fillerRows[row].slice(0, stride - 1);
+      return filler.slice(0, offset) + char + filler.slice(offset);
+    }).join("");
+  }
+
+  it.each([
+    [4, Array.from("abcdefgh", (char) => `${char}x9q`).join("")],
+    [5, Array.from("abcdefgh", (char) => `${char}x9q7`).join("")],
+    [8, weaveSequence("abcdefgh", 8, 7)],
+  ])("rejects an alphabet sequence woven at stride %i", (_stride, sequence) => {
+    vi.stubEnv("SESSION_SECRET", `V6*sW+2Q@${sequence}~pN9!uY=4H#LjX3B`);
+    expect(register).toThrow(startupHalt);
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("SESSION_SECRET"));
+  });
+
+  it("checks the final offset at the length-derived stride limit", () => {
+    vi.stubEnv("SESSION_SECRET", weaveSequence("abcdefgh", 17, 16));
+    expect(register).toThrow(startupHalt);
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("SESSION_SECRET"));
+  });
+
+  const decimalRing = "0123456789";
   const generatedSequences = [
-    ["decimal", "0123456789"],
+    ["decimal", decimalRing],
     ["hexadecimal", "0123456789abcdef"],
     ["alphabet", "abcdefghijklmnopqrstuvwxyz"],
     ["alphanumeric", "abcdefghijklmnopqrstuvwxyz0123456789"],
     ["keyboard rows", "qwertyuiopasdfghjklzxcvbnm"],
     ["keyboard columns", "1qaz2wsx3edc4rfv5tgb6yhn7ujm8ik9ol0p"],
   ].flatMap(([family, ring]) => {
-    const cases = [];
-    const filler = ["m3p7s9v2", "K8zR6c5t"];
+    const groups = [];
     const formats = [
       { format: "plain", separator: "", mixedCase: false },
       { format: "mixed case", separator: "", mixedCase: true },
       { format: "separated", separator: "-_ ", mixedCase: false },
       { format: "separated and mixed case", separator: "-_ ", mixedCase: true },
     ];
-    for (const step of [1, -1, 2, -2, 3, -3, 4, 5]) {
+    const steps = Array.from({ length: ring.length - 1 }, (_, index) => index + 1);
+    // Keep signed cases for descending runs that can also be written without wrapping.
+    for (const step of [...steps, -1, -2, -3]) {
       const starts = [{ topology: "wrapped", start: step > 0 ? ring.length - 1 : 0 }];
-      // Eight characters span seven differences, which may require wrapping on short rings.
+      // A non-wrapping run is impossible when seven differences span the entire ring.
       if (7 * Math.abs(step) < ring.length) {
         starts.push({ topology: "unwrapped", start: step > 0 ? 0 : ring.length - 1 });
       }
       for (const { topology, start } of starts) {
-        const run = Array.from({ length: 8 }, (_, index) =>
-          ring[(start + step * index + ring.length * 3) % ring.length],
-        );
-        for (let stride = 1; stride <= 3; stride++) {
+        const cases = [];
+        const run = Array.from({ length: 8 }, (_, index) => {
+          const position = (start + step * index) % ring.length;
+          return ring[(position + ring.length) % ring.length];
+        }).join("");
+        for (let stride = 1; stride <= 8; stride++) {
           for (let offset = 0; offset < stride; offset++) {
-            const track = run.flatMap((char, index) => {
-              const padding = filler.slice(0, stride - 1).map((lane) => lane[index]);
-              padding.splice(offset, 0, char);
-              return padding;
-            });
+            const track = Array.from(weaveSequence(run, stride, offset));
             for (const { format, separator, mixedCase } of formats) {
               const sequence = track
                 .map((char, index) => mixedCase && Math.floor(index / stride) % 2 === 0 ? char.toUpperCase() : char)
                 .join(separator);
               const value = `V6*sW+2Q@${sequence}~pN9!uY=4H#LjX3B`;
-              cases.push({ family, step, topology, stride, offset, format, value });
+              cases.push({ stride, offset, format, value });
             }
+          }
+        }
+        groups.push({ family, step, topology, cases });
+      }
+    }
+    return groups;
+  });
+
+  it.each(generatedSequences)(
+    "rejects $family sequences (step $step, $topology)",
+    ({ cases }) => {
+      for (const { stride, offset, format, value } of cases) {
+        vi.stubEnv("SESSION_SECRET", value);
+        expect(getAuthConfigError(), `stride ${stride}, offset ${offset}, ${format}`).toContain("SESSION_SECRET");
+      }
+    },
+  );
+
+  it("rejects all 3240 woven decimal-ring runs", () => {
+    // All 9 nonzero differences, 36 stride/offset pairs and 10 starting positions.
+    let checked = 0;
+    for (let step = 1; step < decimalRing.length; step++) {
+      for (let stride = 1; stride <= 8; stride++) {
+        for (let offset = 0; offset < stride; offset++) {
+          for (let start = 0; start < decimalRing.length; start++) {
+            const run = Array.from({ length: 8 }, (_, index) =>
+              decimalRing[(start + step * index) % decimalRing.length],
+            ).join("");
+            const sequence = weaveSequence(run, stride, offset);
+            vi.stubEnv("SESSION_SECRET", `V6*sW+2Q@${sequence}~pN9!uY=4H#LjX3B`);
+            expect(getAuthConfigError(), `step ${step}, stride ${stride}, offset ${offset}, start ${start}`)
+              .toContain("SESSION_SECRET");
+            checked++;
           }
         }
       }
     }
-    return cases;
+    expect(checked).toBe(3240);
   });
 
-  it.each(generatedSequences)(
-    "rejects $family sequences (step $step, $topology, stride $stride, offset $offset, $format)",
-    ({ value }) => {
-      vi.stubEnv("SESSION_SECRET", value);
+  it.each(["aaaaaaaa", "a-a_a a-a_a a-a", "!!!!!!!!", "😀".repeat(8)])(
+    "rejects eight repeated characters (%s)",
+    (run) => {
+      vi.stubEnv("SESSION_SECRET", `V6*sW+2Q@${run}~pN9!uY=4H#LjX3B`);
       expect(register).toThrow(startupHalt);
       expect(console.error).toHaveBeenCalledWith(expect.stringContaining("SESSION_SECRET"));
     },
   );
 
-  it.each(["abcefgik", "abcdefgi", "aaaaaabb", "aaaaaaaa"])(
-    "accepts a run without constant nonzero differences (%s)",
+  it.each(["abcefgik", "abcdefgi", "aaaaaabb", "aaaaaaa", "a-a_a a-a_a a", "!!!!!!!", "😀".repeat(7)])(
+    "accepts a run with changing differences or fewer than eight repeats (%s)",
     (run) => {
       vi.stubEnv("SESSION_SECRET", `V6*sW+2Q@${run}~pN9!uY=4H#LjX3B`);
       expect(register).not.toThrow();
