@@ -1,0 +1,63 @@
+name: Daily Model Cost & Frontier Update
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-agent-cost-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run deterministic data sync & RASC/EAC pipeline
+        env:
+          AA_API_KEY: ${{ secrets.AA_API_KEY }}
+          AA_API_TIER: ${{ vars.AA_API_TIER || 'free' }}
+          DEMO_MODE: "false"
+        run: npm run sync:data
+
+      - name: Validate standardized JSON output deterministically
+        run: |
+          node -e '
+            const fs = require("fs");
+            const data = JSON.parse(fs.readFileSync("data/standardized-models.json", "utf8"));
+            if (!Array.isArray(data.models) || data.models.length === 0) {
+              throw new Error("standardized-models.json has no models");
+            }
+            for (const m of data.models) {
+              if (!m.model_id || !m.data_quality || !m.agent_cost || !m.pricing) {
+                throw new Error("Invalid standardized record: " + JSON.stringify(m));
+              }
+            }
+            console.log("Validated standardized-models.json:", data.models.length, "models");
+          '
+
+      - name: Run automated unit tests
+        run: npm test
+
+      - name: Commit and push updated snapshots
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/standardized-models.json data/history/
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "chore(data): daily deterministic agent cost & frontier update"
+          git push

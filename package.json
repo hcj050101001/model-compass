@@ -1,0 +1,47 @@
+{
+  "name": "llm-frontier",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3100",
+    "build": "next build",
+    "postbuild": "rm -rf .next/standalone/.next/static && cp -r .next/static .next/standalone/.next/static && mkdir -p .next/standalone/node_modules/geoip-country/data && cp -r node_modules/geoip-country/data/* .next/standalone/node_modules/geoip-country/data/",
+    "start": "next start -p 3100 -H 127.0.0.1",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate": "tsx lib/database/migrate.ts",
+    "seed:demo": "tsx scripts/seed-demo.ts",
+    "sync:data": "tsx scripts/sync-data.ts"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.14.0",
+    "@tanstack/react-table": "^8.20.6",
+    "clsx": "^2.1.1",
+    "drizzle-orm": "^0.38.4",
+    "echarts": "^5.6.0",
+    "geoip-country": "^5.0.202611250539",
+    "lucide-react": "^0.475.0",
+    "next": "^15.2.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwind-merge": "^3.0.1",
+    "tsx": "^4.19.3",
+    "zod": "^3.24.2",
+    "zustand": "^5.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "autoprefixer": "^10.4.20",
+    "drizzle-kit": "^0.30.4",
+    "eslint": "^9.20.1",
+    "eslint-config-next": "^15.2.3",
+    "postcss": "^8.5.2",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.6"
+  }
+}

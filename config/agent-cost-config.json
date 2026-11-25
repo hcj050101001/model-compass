@@ -1,0 +1,88 @@
+{
+  "version": "1.0.0",
+  "windowDays": 30,
+  "qualityThresholds": {
+    "minSamples": 30,
+    "minIndependentUsers": 5,
+    "minSamplesPerScenario": 5
+  },
+  "scenarios": [
+    {
+      "id": "simple_coding",
+      "labelZh": "简单代码编写",
+      "labelEn": "Simple Coding",
+      "defaultWeight": 0.15
+    },
+    {
+      "id": "bug_fix",
+      "labelZh": "代码修改与 Bug 修复",
+      "labelEn": "Code Edit & Bug Fix",
+      "defaultWeight": 0.25
+    },
+    {
+      "id": "multi_file_engineering",
+      "labelZh": "多文件工程开发",
+      "labelEn": "Multi-file Engineering",
+      "defaultWeight": 0.20
+    },
+    {
+      "id": "large_repo_understanding",
+      "labelZh": "大型代码仓库理解与修改",
+      "labelEn": "Large Repo Understanding & Edit",
+      "defaultWeight": 0.15
+    },
+    {
+      "id": "search_research",
+      "labelZh": "搜索及研究型 Agent",
+      "labelEn": "Search & Research Agent",
+      "defaultWeight": 0.15
+    },
+    {
+      "id": "general_tool_use",
+      "labelZh": "通用工具调用型 Agent",
+      "labelEn": "General Tool-Use Agent",
+      "defaultWeight": 0.10
+    }
+  ],
+  "eacPresets": {
+    "light": {
+      "id": "light",
+      "labelZh": "轻量任务（假设模板）",
+      "labelEn": "Light Task (Assumed Template)",
+      "isAssumed": true,
+      "inputTokens": 24000,
+      "cacheHitRate": 0.40,
+      "cacheWriteTokens": 4000,
+      "outputTokens": 3000,
+      "reasoningTokens": 2000,
+      "reasoningIncludedInOutput": true,
+      "apiCalls": 4
+    },
+    "medium": {
+      "id": "medium",
+      "labelZh": "中型任务（假设模板）",
+      "labelEn": "Medium Task (Assumed Template)",
+      "isAssumed": true,
+      "inputTokens": 120000,
+      "cacheHitRate": 0.60,
+      "cacheWriteTokens": 15000,
+      "outputTokens": 12000,
+      "reasoningTokens": 8000,
+      "reasoningIncludedInOutput": true,
+      "apiCalls": 10
+    },
+    "heavy": {
+      "id": "heavy",
+      "labelZh": "重型任务（假设模板）",
+      "labelEn": "Heavy Task (Assumed Template)",
+      "isAssumed": true,
+      "inputTokens": 450000,
+      "cacheHitRate": 0.75,
+      "cacheWriteTokens": 40000,
+      "outputTokens": 35000,
+      "reasoningTokens": 25000,
+      "reasoningIncludedInOutput": true,
+      "apiCalls": 25
+    }
+  }
+}

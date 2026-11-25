@@ -1,0 +1,5 @@
+{
+  "version": "1.0",
+  "description": "Optional manual overrides for model release grouping and effort normalization when upstream names are ambiguous.",
+  "overrides": {}
+}

@@ -1,0 +1,126 @@
+{
+  "creators": {
+    "openai": {
+      "name": "OpenAI",
+      "slug": "openai",
+      "country": "US",
+      "website": "https://openai.com",
+      "color": "#10A37F"
+    },
+    "google": {
+      "name": "Google",
+      "slug": "google",
+      "country": "US",
+      "website": "https://deepmind.google",
+      "color": "#4285F4"
+    },
+    "anthropic": {
+      "name": "Anthropic",
+      "slug": "anthropic",
+      "country": "US",
+      "website": "https://www.anthropic.com",
+      "color": "#D97757"
+    },
+    "deepseek": {
+      "name": "DeepSeek",
+      "slug": "deepseek",
+      "country": "CN",
+      "website": "https://www.deepseek.com",
+      "color": "#4F46E5"
+    },
+    "alibaba": {
+      "name": "Alibaba / Qwen",
+      "slug": "alibaba",
+      "country": "CN",
+      "website": "https://qwenlm.github.io",
+      "color": "#8B5CF6"
+    },
+    "qwen": {
+      "name": "Alibaba / Qwen",
+      "slug": "alibaba",
+      "country": "CN",
+      "website": "https://qwenlm.github.io",
+      "color": "#8B5CF6"
+    },
+    "xai": {
+      "name": "xAI",
+      "slug": "xai",
+      "country": "US",
+      "website": "https://x.ai",
+      "color": "#94A3B8"
+    },
+    "meta": {
+      "name": "Meta",
+      "slug": "meta",
+      "country": "US",
+      "website": "https://llama.meta.com",
+      "color": "#0EA5E9"
+    },
+    "moonshot": {
+      "name": "Moonshot / Kimi",
+      "slug": "moonshot",
+      "country": "CN",
+      "website": "https://www.moonshot.cn",
+      "color": "#F59E0B"
+    },
+    "kimi": {
+      "name": "Moonshot / Kimi",
+      "slug": "moonshot",
+      "country": "CN",
+      "website": "https://www.moonshot.cn",
+      "color": "#F59E0B"
+    },
+    "zhipu": {
+      "name": "Zhipu / Z AI",
+      "slug": "zhipu",
+      "country": "CN",
+      "website": "https://www.zhipuai.cn",
+      "color": "#EF4444"
+    },
+    "z-ai": {
+      "name": "Zhipu / Z AI",
+      "slug": "zhipu",
+      "country": "CN",
+      "website": "https://www.zhipuai.cn",
+      "color": "#EF4444"
+    },
+    "minimax": {
+      "name": "MiniMax",
+      "slug": "minimax",
+      "country": "CN",
+      "website": "https://www.minimaxi.com",
+      "color": "#EC4899"
+    },
+    "mistral": {
+      "name": "Mistral",
+      "slug": "mistral",
+      "country": "FR",
+      "website": "https://mistral.ai",
+      "color": "#F97316"
+    },
+    "microsoft": {
+      "name": "Microsoft",
+      "slug": "microsoft",
+      "country": "US",
+      "website": "https://azure.microsoft.com",
+      "color": "#06B6D4"
+    },
+    "amazon": {
+      "name": "Amazon",
+      "slug": "amazon",
+      "country": "US",
+      "website": "https://aws.amazon.com/bedrock/nova",
+      "color": "#EAB308"
+    }
+  },
+  "fallbackPalette": [
+    "#14B8A6",
+    "#A855F7",
+    "#84CC16",
+    "#F43F5E",
+    "#3B82F6",
+    "#FB923C",
+    "#22C55E",
+    "#E879F9"
+  ]
+}
