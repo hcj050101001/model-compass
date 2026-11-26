@@ -21,6 +21,7 @@ import { Header } from "./layout/Header";
 import { FrontierChart } from "./charts/FrontierChart";
 import { LeaderboardTable } from "./leaderboard/LeaderboardTable";
 import { ModelDetailDrawer } from "./model-detail/ModelDetailDrawer";
+import { LatexFormula } from "./ui/LatexFormula";
 
 import {
   MAINSTREAM_PROVIDER_ORDER,
@@ -551,7 +552,7 @@ export function DashboardClient({
           </p>
 
           {showFormulaInfo && (
-            <div className="space-y-3 rounded-lg border border-border bg-bg-primary/60 p-3 text-[11px] leading-relaxed text-text-secondary">
+            <div className="space-y-4 rounded-lg border border-border bg-bg-primary/60 p-3.5 text-[11px] leading-relaxed text-text-secondary">
               {locale === "zh" ? (
                 <>
                   <div>
@@ -559,32 +560,36 @@ export function DashboardClient({
                       1. 为什么用「平均上下文」而不是轮数来判定任务量级？
                     </div>
                     <p className="mt-1">
-                      单看对话轮数很容易失真：如果基础上下文很小（例如每步 2K tokens），即使跑 20 轮总花费依然很低；相反，科研文献综述、长代码库分析或大规模数据推理哪怕只有 6~10 步，只要平均上下文达到 100K+，输入读取成本就会指数级上升。因此，本平台采用社区常用的
+                      单看对话轮数很容易失真：如果每步只有 2K tokens，跑 20 轮总输入也才 40K；相反，科研文献综述或大型代码库分析哪怕只有 6 步，只要平均上下文达到 140K，总输入就达到 840K（21 倍）。因此，本平台采用
                       <strong className="text-text-primary">
                         上下文加权有效负载（Context-Weighted Effective Load）
                       </strong>
                       来划分任务量级：
                     </p>
-                    <div className="mt-1.5 rounded bg-bg-secondary px-2.5 py-1.5 font-mono text-[10.5px] text-accent">
-                      C_eff = AvgContext + 4 × AvgOutputPerTurn ｜ V_in = N × AvgContext
+                    <div className="mt-2 flex items-center justify-between gap-3 rounded-md border border-border/80 bg-bg-secondary px-3 py-2">
+                      <LatexFormula
+                        displayMode
+                        tex={String.raw`C_{\text{eff}} = \overline{C} + 4 \cdot \overline{O}_{\text{turn}}, \qquad V_{\text{in}} = N \cdot \overline{C}`}
+                      />
+                      <span className="shrink-0 font-mono text-[10px] text-text-muted">(1)</span>
                     </div>
-                    <p className="mt-1 text-text-muted">
-                      其中输出单价通常约为输入的 4 倍，故输出权重取 4；分档采用双门槛且均为严格小于：轻量需平均上下文 &lt; 36K 且 C_eff &lt; 44K，标准需平均上下文 &lt; 110K 且 C_eff &lt; 120K，其余为重度；任务档位也可以在界面上手动选择，同时覆盖编程开发、科研文献、长文档分析与多步检索等所有任务。
+                    <p className="mt-1.5 text-text-muted">
+                      其中输出单价通常约为输入的 4 倍，故输出权重取 4；分档采用双严格小于门槛：轻量需 <LatexFormula tex={String.raw`\overline{C} < 36\text{K}`} /> 且 <LatexFormula tex={String.raw`C_{\text{eff}} < 44\text{K}`} />，标准需 <LatexFormula tex={String.raw`\overline{C} < 110\text{K}`} /> 且 <LatexFormula tex={String.raw`C_{\text{eff}} < 120\text{K}`} />，其余为重度（e.g. 标准档 <LatexFormula tex={String.raw`\overline{C}=64\text{K},\,\overline{O}_{\text{turn}}=900 \Rightarrow C_{\text{eff}}=67.6\text{K}`} />）。
                     </p>
                   </div>
 
                   <div>
                     <div className="font-semibold text-text-primary">
-                      2. 三档通用任务量级参数对照
+                      2. 三档通用任务量级参数对照（mt-v2 多轮状态机）
                     </div>
                     <div className="mt-1.5 overflow-x-auto rounded border border-border">
-                      <table className="w-full min-w-[480px] text-left text-[10.5px]">
+                      <table className="w-full min-w-[500px] text-left text-[10.5px]">
                         <thead className="bg-bg-tertiary text-text-muted">
                           <tr>
                             <th className="px-2 py-1.5">量级</th>
-                            <th className="px-2 py-1.5">平均上下文</th>
+                            <th className="px-2 py-1.5">平均上下文 <LatexFormula tex={String.raw`\overline{C}`} /></th>
                             <th className="px-2 py-1.5">初始 → 峰值</th>
-                            <th className="px-2 py-1.5">步数</th>
+                            <th className="px-2 py-1.5">步数 <LatexFormula tex={String.raw`N`} /></th>
                             <th className="px-2 py-1.5">典型适用场景</th>
                           </tr>
                         </thead>
@@ -617,25 +622,81 @@ export function DashboardClient({
 
                   <div>
                     <div className="font-semibold text-text-primary">
-                      3. 前缀缓存、窗口压缩与思考深度计费
+                      3. 前缀缓存、窗口压缩与思考深度计费公式
                     </div>
                     <ul className="mt-1 list-disc space-y-1 pl-4">
                       <li>
                         <strong className="text-text-primary">前缀缓存（Prompt Caching）：</strong>
-                        每步增量上下文累积后，支持缓存的厂商按 90% 前缀命中计算缓存读取折扣；区分显式缓存写入（如 Anthropic 按官方写缓存价或 1.25× 输入单价）与自动缓存（OpenAI / DeepSeek / Google 写入免费、仅读取打折）。
+                        主流生产级 Coding Agent 实测前缀缓存命中率通常在 <strong className="text-text-primary">80%–92%</strong>（如 Claude Code 约 92%、Cursor 多轮会话 84%–99%）。本平台对支持缓存折扣的厂商统一按 <strong className="text-text-primary">h = 90%</strong> 前缀命中计算，并区分显式缓存写入（如 Anthropic 按官方写价或 1.25× 输入单价）与自动前缀缓存（OpenAI / DeepSeek / Google 写入免费、仅读取打折）。
                       </li>
                       <li>
                         <strong className="text-text-primary">窗口压缩与缓存失效惩罚：</strong>
-                        当累计上下文超过模型可用窗口的 80% 时，触发上下文压缩（回落至可用窗口的 35%，并计入 2,000 tokens 摘要输出），同时使先前前缀缓存失效并重新写入。小窗口模型在重度任务中会因频繁压缩导致成本反超。
+                        当累计上下文超过模型可用窗口 <LatexFormula tex={String.raw`W_{\text{use}} = \lfloor 0.8W \rfloor`} /> 时，触发上下文压缩（回落至 <LatexFormula tex={String.raw`\mathrm{round}(0.35 W_{\text{use}})`} /> 并计入 2,000 tokens 摘要输出），同时使先前前缀缓存失效并重新写入。
                       </li>
                       <li>
                         <strong className="text-text-primary">思考深度（推理 Token）：</strong>
-                        按模型思考档位计入内部推理输出（Non-thinking 为 0，Low 900，Medium 2,200，High 4,800，Very High 8,000，Max 12,000 tokens/步），统一按官方输出单价计费。
+                        按档位计入内部推理输出（Non-thinking 0、Minimal 300、Low 900、Medium 2,200、High 4,800、Very High/XHigh 8,000、Max 12,000 tokens/步），与可见回复同按官方输出单价 <LatexFormula tex={String.raw`P_{\text{out}}`} /> 计费。
                       </li>
                     </ul>
-                    <div className="mt-1.5 rounded bg-bg-secondary px-2.5 py-1.5 font-mono text-[10.5px] text-emerald-400">
-                      TotalCost = (U_in × P_in + C_read × P_cache_read + C_write × P_cache_write + (O_vis + O_think) × P_out) / 1M
+                    <div className="mt-2 space-y-2">
+                      <div className="flex items-center justify-between gap-3 rounded-md border border-border/80 bg-bg-secondary px-3 py-2">
+                        <LatexFormula
+                          displayMode
+                          tex={String.raw`C_{\text{read},t} = \mathrm{round}(h \cdot C_{t-1}), \quad U_{\text{in},t} = (C_{t-1} - C_{\text{read},t}) + \mathbb{I}_{\text{auto}} \Delta_t, \quad C_{\text{write},t} = \mathbb{I}_{\text{explicit}} \Delta_t`}
+                        />
+                        <span className="shrink-0 font-mono text-[10px] text-text-muted">(2)</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3 rounded-md border border-emerald-500/30 bg-bg-secondary px-3 py-2">
+                        <LatexFormula
+                          displayMode
+                          tex={String.raw`\text{TotalCost} = \frac{U_{\text{in}} \cdot P_{\text{in}} + C_{\text{read}} \cdot P_{\text{cache\_read}} + C_{\text{write}} \cdot P_{\text{cache\_write}} + (O_{\text{vis}} + O_{\text{think}}) \cdot P_{\text{out}}}{10^6}`}
+                        />
+                        <span className="shrink-0 font-mono text-[10px] text-emerald-400">(3)</span>
+                      </div>
                     </div>
+                  </div>
+
+                  <div>
+                    <div className="font-semibold text-text-primary">
+                      4. 公式符号表与算例对照（e.g. 标准 11 轮 · High 推理 · 128K 窗口 · $1/$4）
+                    </div>
+                    <div className="mt-1.5 overflow-x-auto rounded border border-border">
+                      <table className="w-full min-w-[540px] text-left text-[10.5px]">
+                        <thead className="bg-bg-tertiary text-text-muted">
+                          <tr>
+                            <th className="px-2 py-1.5">符号</th>
+                            <th className="px-2 py-1.5">含义说明</th>
+                            <th className="px-2 py-1.5">e.g. 算例数值与单项费用</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border">
+                          <tr>
+                            <td className="px-2 py-1.5"><LatexFormula tex={String.raw`U_{\text{in}},\, P_{\text{in}}`} /></td>
+                            <td className="px-2 py-1.5">未命中缓存输入量与官方输入单价</td>
+                            <td className="px-2 py-1.5 tabular-nums">e.g. 60,000 tokens × $1.00/1M = $0.0600</td>
+                          </tr>
+                          <tr>
+                            <td className="px-2 py-1.5"><LatexFormula tex={String.raw`C_{\text{read}},\, P_{\text{cache\_read}}`} /></td>
+                            <td className="px-2 py-1.5">命中前缀缓存重读量（h=90%）与读缓存单价</td>
+                            <td className="px-2 py-1.5 tabular-nums">e.g. 540,000 tokens × $0.20/1M = $0.1080</td>
+                          </tr>
+                          <tr>
+                            <td className="px-2 py-1.5"><LatexFormula tex={String.raw`C_{\text{write}},\, P_{\text{cache\_write}}`} /></td>
+                            <td className="px-2 py-1.5">显式写缓存量与写缓存价（自动缓存为 0）</td>
+                            <td className="px-2 py-1.5 tabular-nums">e.g. 139,840 tokens × $1.25/1M = $0.1748</td>
+                          </tr>
+                          <tr>
+                            <td className="px-2 py-1.5"><LatexFormula tex={String.raw`O_{\text{vis}} + O_{\text{think}},\, P_{\text{out}}`} /></td>
+                            <td className="px-2 py-1.5">可见输出（含 2K 压缩摘要）+ 推理思考量与输出单价</td>
+                            <td className="px-2 py-1.5 tabular-nums">e.g. (11,900 + 52,800) × $4.00/1M = $0.2588</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="mt-1.5 rounded border border-border/70 bg-bg-secondary/70 px-2.5 py-1.5 text-[10.5px] text-text-muted">
+                      <strong className="text-text-primary">算例合计（e.g.）：</strong>
+                      显式缓存 + 128K 窗口单次任务约 <span className="font-mono text-emerald-400">$0.6016</span>（无缓存对照为 $0.9986；若使用 1M 大窗口免除第 11 轮压缩重写则为 $0.5488，单次压缩导致成本增加 +9.6%）。
+                    </p>
                   </div>
                 </>
               ) : (
@@ -645,32 +706,36 @@ export function DashboardClient({
                       1. Why Average Context Window Instead of Turn Count?
                     </div>
                     <p className="mt-1">
-                      Turn count alone is misleading: a 20-turn session with a 2K-token context costs very little, whereas scientific literature synthesis, large-repo analysis, or deep data workflows with 100K+ average context incur steep input costs even in 6–10 steps. We classify task scale using{" "}
+                      Turn count alone is misleading: a 20-turn session with a 2K-token context uses only 40K total input tokens, whereas scientific literature synthesis or large-repo analysis with 140K average context reaches 840K (21×) in just 6 steps. We classify task scale using{" "}
                       <strong className="text-text-primary">
                         Context-Weighted Effective Load
                       </strong>
                       :
                     </p>
-                    <div className="mt-1.5 rounded bg-bg-secondary px-2.5 py-1.5 font-mono text-[10.5px] text-accent">
-                      C_eff = AvgContext + 4 × AvgOutputPerTurn ｜ V_in = N × AvgContext
+                    <div className="mt-2 flex items-center justify-between gap-3 rounded-md border border-border/80 bg-bg-secondary px-3 py-2">
+                      <LatexFormula
+                        displayMode
+                        tex={String.raw`C_{\text{eff}} = \overline{C} + 4 \cdot \overline{O}_{\text{turn}}, \qquad V_{\text{in}} = N \cdot \overline{C}`}
+                      />
+                      <span className="shrink-0 font-mono text-[10px] text-text-muted">(1)</span>
                     </div>
-                    <p className="mt-1 text-text-muted">
-                      Output tokens are weighted 4× to reflect typical API price ratios. Tiers use dual thresholds, both strictly less-than: Light requires average context &lt; 36K and C_eff &lt; 44K, Standard requires average context &lt; 110K and C_eff &lt; 120K, and everything else is Heavy; a task profile can also be selected manually in the UI. This applies uniformly across coding, scientific research, analysis, and general agent tasks.
+                    <p className="mt-1.5 text-text-muted">
+                      Output tokens are weighted 4× to reflect typical API price ratios. Tiers use dual strictly less-than thresholds: Light requires <LatexFormula tex={String.raw`\overline{C} < 36\text{K}`} /> and <LatexFormula tex={String.raw`C_{\text{eff}} < 44\text{K}`} />, Standard requires <LatexFormula tex={String.raw`\overline{C} < 110\text{K}`} /> and <LatexFormula tex={String.raw`C_{\text{eff}} < 120\text{K}`} />, and everything else is Heavy (e.g. Standard <LatexFormula tex={String.raw`\overline{C}=64\text{K},\,\overline{O}_{\text{turn}}=900 \Rightarrow C_{\text{eff}}=67.6\text{K}`} />).
                     </p>
                   </div>
 
                   <div>
                     <div className="font-semibold text-text-primary">
-                      2. Universal Task Scale Parameters
+                      2. Universal Task Scale Parameters (mt-v2 State Machine)
                     </div>
                     <div className="mt-1.5 overflow-x-auto rounded border border-border">
-                      <table className="w-full min-w-[480px] text-left text-[10.5px]">
+                      <table className="w-full min-w-[500px] text-left text-[10.5px]">
                         <thead className="bg-bg-tertiary text-text-muted">
                           <tr>
                             <th className="px-2 py-1.5">Scale</th>
-                            <th className="px-2 py-1.5">Avg Context</th>
+                            <th className="px-2 py-1.5">Avg Context <LatexFormula tex={String.raw`\overline{C}`} /></th>
                             <th className="px-2 py-1.5">Start → Peak</th>
-                            <th className="px-2 py-1.5">Steps</th>
+                            <th className="px-2 py-1.5">Steps <LatexFormula tex={String.raw`N`} /></th>
                             <th className="px-2 py-1.5">Typical Tasks</th>
                           </tr>
                         </thead>
@@ -708,20 +773,76 @@ export function DashboardClient({
                     <ul className="mt-1 list-disc space-y-1 pl-4">
                       <li>
                         <strong className="text-text-primary">Prompt Caching:</strong>{" "}
-                        Applies 90% prefix cache hit rates where supported. Models with explicit cache writes (e.g. Anthropic) pay official write pricing (or 1.25× input), while automatic prefix caching (OpenAI / DeepSeek / Google) charges only discounted read pricing.
+                        Production coding agents routinely observe <strong className="text-text-primary">80%–92%</strong> prefix cache hit rates (e.g. Claude Code ~92%, Cursor 84%–99%). Where cache discounts are supported, we apply a <strong className="text-text-primary">h = 90%</strong> hit rate, distinguishing explicit cache writes (e.g. Anthropic official write price or 1.25× input) from automatic prefix caching (OpenAI / DeepSeek / Google zero-surcharge writes).
                       </li>
                       <li>
                         <strong className="text-text-primary">Compaction &amp; Cache Invalidation:</strong>{" "}
-                        Exceeding 80% of a model&apos;s context window triggers compaction (shrinking to 35% + 2,000 summary output tokens) and invalidates the prefix cache, penalizing small-context models on heavy tasks.
+                        Exceeding <LatexFormula tex={String.raw`W_{\text{use}} = \lfloor 0.8W \rfloor`} /> triggers compaction (shrinking to <LatexFormula tex={String.raw`\mathrm{round}(0.35 W_{\text{use}})`} /> + 2,000 summary output tokens) and invalidates the prefix cache, penalizing small-context models on heavy tasks.
                       </li>
                       <li>
                         <strong className="text-text-primary">Thinking Tokens:</strong>{" "}
-                        Reasoning tiers add per-step thinking tokens (Non-thinking 0, Low 900, Medium 2,200, High 4,800, Very High 8,000, Max 12,000) billed at the output rate.
+                        Reasoning tiers add per-turn thinking tokens (Non-thinking 0, Minimal 300, Low 900, Medium 2,200, High 4,800, Very High/XHigh 8,000, Max 12,000) billed at <LatexFormula tex={String.raw`P_{\text{out}}`} />.
                       </li>
                     </ul>
-                    <div className="mt-1.5 rounded bg-bg-secondary px-2.5 py-1.5 font-mono text-[10.5px] text-emerald-400">
-                      TotalCost = (U_in × P_in + C_read × P_cache_read + C_write × P_cache_write + (O_vis + O_think) × P_out) / 1M
+                    <div className="mt-2 space-y-2">
+                      <div className="flex items-center justify-between gap-3 rounded-md border border-border/80 bg-bg-secondary px-3 py-2">
+                        <LatexFormula
+                          displayMode
+                          tex={String.raw`C_{\text{read},t} = \mathrm{round}(h \cdot C_{t-1}), \quad U_{\text{in},t} = (C_{t-1} - C_{\text{read},t}) + \mathbb{I}_{\text{auto}} \Delta_t, \quad C_{\text{write},t} = \mathbb{I}_{\text{explicit}} \Delta_t`}
+                        />
+                        <span className="shrink-0 font-mono text-[10px] text-text-muted">(2)</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3 rounded-md border border-emerald-500/30 bg-bg-secondary px-3 py-2">
+                        <LatexFormula
+                          displayMode
+                          tex={String.raw`\text{TotalCost} = \frac{U_{\text{in}} \cdot P_{\text{in}} + C_{\text{read}} \cdot P_{\text{cache\_read}} + C_{\text{write}} \cdot P_{\text{cache\_write}} + (O_{\text{vis}} + O_{\text{think}}) \cdot P_{\text{out}}}{10^6}`}
+                        />
+                        <span className="shrink-0 font-mono text-[10px] text-emerald-400">(3)</span>
+                      </div>
                     </div>
+                  </div>
+
+                  <div>
+                    <div className="font-semibold text-text-primary">
+                      4. Symbol Legend &amp; Worked Example (e.g. Standard 11-turn · High · 128K window · $1/$4)
+                    </div>
+                    <div className="mt-1.5 overflow-x-auto rounded border border-border">
+                      <table className="w-full min-w-[540px] text-left text-[10.5px]">
+                        <thead className="bg-bg-tertiary text-text-muted">
+                          <tr>
+                            <th className="px-2 py-1.5">Symbol</th>
+                            <th className="px-2 py-1.5">Meaning</th>
+                            <th className="px-2 py-1.5">e.g. Worked Breakdown</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border">
+                          <tr>
+                            <td className="px-2 py-1.5"><LatexFormula tex={String.raw`U_{\text{in}},\, P_{\text{in}}`} /></td>
+                            <td className="px-2 py-1.5">Uncached input tokens &amp; base input rate</td>
+                            <td className="px-2 py-1.5 tabular-nums">e.g. 60,000 tokens × $1.00/1M = $0.0600</td>
+                          </tr>
+                          <tr>
+                            <td className="px-2 py-1.5"><LatexFormula tex={String.raw`C_{\text{read}},\, P_{\text{cache\_read}}`} /></td>
+                            <td className="px-2 py-1.5">Cache-hit prefix reads (h=90%) &amp; read rate</td>
+                            <td className="px-2 py-1.5 tabular-nums">e.g. 540,000 tokens × $0.20/1M = $0.1080</td>
+                          </tr>
+                          <tr>
+                            <td className="px-2 py-1.5"><LatexFormula tex={String.raw`C_{\text{write}},\, P_{\text{cache\_write}}`} /></td>
+                            <td className="px-2 py-1.5">Explicit cache writes &amp; write rate (0 if auto)</td>
+                            <td className="px-2 py-1.5 tabular-nums">e.g. 139,840 tokens × $1.25/1M = $0.1748</td>
+                          </tr>
+                          <tr>
+                            <td className="px-2 py-1.5"><LatexFormula tex={String.raw`O_{\text{vis}} + O_{\text{think}},\, P_{\text{out}}`} /></td>
+                            <td className="px-2 py-1.5">Visible output (+2K summary) &amp; thinking at output rate</td>
+                            <td className="px-2 py-1.5 tabular-nums">e.g. (11,900 + 52,800) × $4.00/1M = $0.2588</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="mt-1.5 rounded border border-border/70 bg-bg-secondary/70 px-2.5 py-1.5 text-[10.5px] text-text-muted">
+                      <strong className="text-text-primary">Worked Total (e.g.):</strong>{" "}
+                      Explicit caching + 128K window yields <span className="font-mono text-emerald-400">$0.6016</span> (vs $0.9986 uncached, or $0.5488 on a 1M window with zero compaction — compaction adds +9.6%).
+                    </p>
                   </div>
                 </>
               )}

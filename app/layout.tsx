@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { cookies, headers } from "next/headers";
 import { LocaleProvider } from "@/components/i18n/LocaleProvider";
 import { LOCALE_COOKIE_NAME, resolveRequestLocale } from "@/lib/i18n/locale";
+import "katex/dist/katex.min.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
