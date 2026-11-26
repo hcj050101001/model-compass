@@ -25,6 +25,7 @@ export type ReadinessReason =
   | "no_active_snapshot"
   | "demo_snapshot"
   | "coverage_below_minimum"
+  | "coverage_config_unavailable"
   | "publication_unavailable"
   | "snapshot_unverified"
   | "snapshot_expired";
@@ -51,22 +52,36 @@ export async function evaluateReadiness(
     return { ready: false, reason: "schema_missing" };
   }
 
-  let client: ReturnType<typeof createClient>;
+  let thresholds: ReturnType<typeof getCoverageThresholds>;
+  try {
+    thresholds = getCoverageThresholds();
+  } catch {
+    return { ready: false, reason: "coverage_config_unavailable" };
+  }
+
+  let client!: ReturnType<typeof createClient>;
   try {
     client = createClient({ url: `file:${dbPath}` });
     const tables = await client.execute(
       `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('data_snapshots','benchmark_measurements','sync_jobs')`
     );
     if (tables.rows.length < 3) {
+      client.close();
       return { ready: false, reason: "schema_missing" };
     }
     // Publication columns are part of the expected schema.
     const cols = await client.execute(`PRAGMA table_info(data_snapshots)`);
     const colNames = new Set(cols.rows.map((r) => String(r.name ?? "")));
     if (!colNames.has("published_at") || !colNames.has("export_path")) {
+      client.close();
       return { ready: false, reason: "schema_missing" };
     }
   } catch {
+    try {
+      client.close();
+    } catch {
+      // Client creation itself failed; nothing to close.
+    }
     return { ready: false, reason: "storage_unavailable" };
   }
 
@@ -120,7 +135,6 @@ export async function evaluateReadiness(
         positiveEstimate += 1;
       }
     }
-    const thresholds = getCoverageThresholds();
     if (
       scored < thresholds.minScoredModels ||
       positiveEstimate < thresholds.minPositiveEstimateModels ||
@@ -167,5 +181,7 @@ export async function evaluateReadiness(
     return { ready: true, reason: "ready" };
   } catch {
     return { ready: false, reason: "storage_unavailable" };
+  } finally {
+    client.close();
   }
 }

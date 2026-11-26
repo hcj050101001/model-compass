@@ -1073,6 +1073,7 @@ export function FrontierChart({
     locale,
     t,
     store,
+    getCost,
   ]);
 
   function handleResetZoom() {

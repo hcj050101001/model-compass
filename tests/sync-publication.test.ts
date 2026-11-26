@@ -228,10 +228,14 @@ describe("fault injection reconciliation", () => {
       ...isoEnv,
       MODEL_COMPASS_FAULT_INJECT: "after_activation",
     });
-    // The child reports failure (distribution copy never ran), but the
-    // activation transaction committed: a follow-up run reconciles via
-    // no_change and repairs the distribution copies from verified bytes.
-    expect(lastJsonLine(crashed.stdout).status).toBe("failed");
+    const crashedResult = lastJsonLine(crashed.stdout);
+    // Fix round 1 (review P3-3): the activation transaction committed, so
+    // the run must NOT be reported as failed. It reports success with
+    // distributionPending=true (the distribution copy never ran); a
+    // follow-up run reconciles via no_change and repairs the copies from
+    // verified bytes.
+    expect(crashedResult.status).toBe("success");
+    expect(crashedResult.distributionPending).toBe(true);
     expect(
       fs.existsSync(path.join(isoDir, "standardized-models.json"))
     ).toBe(false);
@@ -253,6 +257,52 @@ describe("fault injection reconciliation", () => {
     );
     expect(mainBytes).toBe(versionBytes);
   }, 180_000);
+});
+
+describe("immutable publication file (fix round 1, review P3-2)", () => {
+  it("two concurrent processes, same snapshot id, different payloads: exactly one wins, file keeps winner bytes", async () => {
+    const snapshotId = `snap_race_${Date.now()}`;
+    const [a, b] = await Promise.all([
+      runChild(["write-publication", snapshotId, "alpha"]),
+      runChild(["write-publication", snapshotId, "beta"]),
+    ]);
+    const results = [lastJsonLine(a.stdout), lastJsonLine(b.stdout)];
+    const winners = results.filter((r) => r.ok === true);
+    const losers = results.filter((r) => r.ok === false);
+    expect(winners).toHaveLength(1);
+    expect(losers).toHaveLength(1);
+    const fileBytes = fs.readFileSync(
+      path.join(dataDir, "snapshots", `${snapshotId}.json`),
+      "utf8"
+    );
+    // The on-disk bytes are exactly the winner's serialized payload and
+    // hash to the winner's reported digest — never the loser's.
+    expect(exported.sha256Hex(fileBytes)).toBe(winners[0].sha256 as string);
+    expect(fileBytes).not.toBe(
+      JSON.stringify({ marker: fileBytes.includes("alpha") ? "beta" : "alpha" }, null, 2)
+    );
+  }, 60_000);
+
+  it("same payload re-write is idempotent; different payload fails closed and leaves bytes untouched", async () => {
+    const snapshotId = `snap_idem_${Date.now()}`;
+    const payload = { marker: "same" } as unknown as Parameters<
+      typeof exported.writeImmutablePublicationFile
+    >[0]["payload"];
+    const first = exported.writeImmutablePublicationFile({ snapshotId, payload });
+    const second = exported.writeImmutablePublicationFile({ snapshotId, payload });
+    expect(second.sha256).toBe(first.sha256);
+    expect(() =>
+      exported.writeImmutablePublicationFile({
+        snapshotId,
+        payload: { marker: "different" } as unknown as typeof payload,
+      })
+    ).toThrow(/different digest/);
+    const bytes = fs.readFileSync(
+      path.join(dataDir, "snapshots", `${snapshotId}.json`),
+      "utf8"
+    );
+    expect(bytes).toBe(first.serialized);
+  });
 });
 
 describe("data gates (real mode)", () => {

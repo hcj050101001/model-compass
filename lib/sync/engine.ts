@@ -9,7 +9,7 @@ import {
   modelVariants,
   syncJobs,
 } from "@/lib/database/schema";
-import { getActiveMeasurements, getSnapshotReconciliation } from "@/lib/database/queries";
+import { getActiveMeasurements } from "@/lib/database/queries";
 import { runArtificialAnalysisAdapter } from "@/lib/data-sources/artificial-analysis/adapter";
 import {
   mapAAModelsToNormalized,
@@ -62,6 +62,12 @@ export interface SyncRunResult {
   errorMessage?: string;
   /** Structured reason code for failed/skipped outcomes (Package E). */
   reasonCode?: string;
+  /**
+   * True when the publication itself committed (job terminal state is
+   * success/no_change) but writing the distribution copies failed; the
+   * copies are repaired idempotently by a later no_change run.
+   */
+  distributionPending?: boolean;
   isDemo: boolean;
 }
 
@@ -690,353 +696,6 @@ export async function activateSnapshot(params: {
   });
 }
 
-export async function commitSnapshotAtomically(params: {
-  bundle: NormalizedBundle;
-  extras: Map<string, EnrichedMeasurementExtra>;
-  source: string;
-  indexVersion: string;
-  fetchedAt: string;
-  isDemo: boolean;
-}): Promise<{ snapshotId: string; status: "success" | "no_change" }> {
-  const { bundle, extras, source, indexVersion, fetchedAt, isDemo } = params;
-  const db = getDb();
-  const contentHash = computeBundleContentHash(bundle, indexVersion, extras);
-
-  const [activeSnapshot] = await db
-    .select()
-    .from(dataSnapshots)
-    .where(eq(dataSnapshots.status, "active"))
-    .orderBy(desc(dataSnapshots.fetchedAt))
-    .limit(1);
-
-  if (
-    activeSnapshot &&
-    activeSnapshot.contentHash === contentHash &&
-    activeSnapshot.source === source &&
-    activeSnapshot.isDemo === isDemo
-  ) {
-    return { snapshotId: activeSnapshot.id, status: "no_change" };
-  }
-
-  const snapshotId = `snap_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
-
-  // Package C firstObservedAt continuation (design sec.2.4 / C-5): when the
-  // same (variant, field, value, source, upstreamKey) was already present in
-  // the current active snapshot, its first-observation time is carried over;
-  // only genuinely new quotes start a new first-observation at this fetch.
-  const creatorById = new Map(bundle.creators.map((c) => [c.id, c]));
-  const releaseById = new Map(bundle.releases.map((r) => [r.id, r]));
-  const variantById = new Map(bundle.variants.map((v) => [v.id, v]));
-  const prevByVariant = new Map<
-    string,
-    { fieldSourcesJson: string | null; prices: Record<string, number | null> }
-  >();
-  if (activeSnapshot) {
-    const prevRows = await db
-      .select()
-      .from(benchmarkMeasurements)
-      .where(eq(benchmarkMeasurements.snapshotId, activeSnapshot.id));
-    for (const pr of prevRows) {
-      prevByVariant.set(pr.variantId, {
-        fieldSourcesJson: pr.fieldSourcesJson,
-        prices: {
-          input: pr.inputPricePerMillion,
-          output: pr.outputPricePerMillion,
-          cacheRead: pr.cacheReadPricePerMillion,
-          cacheWrite: pr.cacheWritePricePerMillion,
-          contextWindow: pr.frozenContextWindow,
-        },
-      });
-    }
-  }
-  const priceOf = (
-    m: NormalizedBundle["measurements"][number],
-    field: string
-  ): number | null => {
-    switch (field) {
-      case "input":
-        return m.inputPricePerMillion;
-      case "output":
-        return m.outputPricePerMillion;
-      case "cacheRead":
-        return m.cacheReadPricePerMillion;
-      case "cacheWrite":
-        return m.cacheWritePricePerMillion;
-      case "contextWindow":
-        return variantById.get(m.variantId)
-          ? (releaseById.get(variantById.get(m.variantId)!.modelReleaseId)
-              ?.contextWindow ?? null)
-          : null;
-      default:
-        return null;
-    }
-  };
-  const adjustedProvenance = new Map<
-    string,
-    { json: string; firstObservedAt: string | null }
-  >();
-  for (const m of bundle.measurements) {
-    const extra = extras.get(m.variantId);
-    let prov: PricingProvenance = {};
-    if (extra?.fieldSourcesJson) {
-      try {
-        prov = JSON.parse(extra.fieldSourcesJson) as PricingProvenance;
-      } catch {
-        prov = { ...(m.fieldSources ?? {}) };
-      }
-    } else if (m.fieldSources) {
-      prov = { ...m.fieldSources };
-    }
-    const prev = prevByVariant.get(m.variantId);
-    let prevProv: PricingProvenance = {};
-    if (prev?.fieldSourcesJson) {
-      try {
-        prevProv = JSON.parse(prev.fieldSourcesJson) as PricingProvenance;
-      } catch {
-        prevProv = {};
-      }
-    }
-    let earliest: string | null = null;
-    for (const [field, entry] of Object.entries(prov)) {
-      if (!entry) continue;
-      const prevEntry = prevProv[field as keyof PricingProvenance];
-      const sameQuote =
-        prevEntry &&
-        prevEntry.source === entry.source &&
-        prevEntry.upstreamKey === entry.upstreamKey &&
-        prev !== undefined &&
-        prev.prices[field] !== undefined &&
-        prev.prices[field] === priceOf(m, field);
-      entry.firstObservedAt = sameQuote
-        ? (prevEntry.firstObservedAt ?? fetchedAt)
-        : (entry.firstObservedAt ?? fetchedAt);
-      if (!earliest || entry.firstObservedAt < earliest) {
-        earliest = entry.firstObservedAt;
-      }
-    }
-    adjustedProvenance.set(m.variantId, {
-      json: JSON.stringify(prov),
-      firstObservedAt: earliest,
-    });
-  }
-
-  await db.transaction(async (tx) => {
-    for (const c of bundle.creators) {
-      await tx
-        .insert(modelCreators)
-        .values(c)
-        .onConflictDoUpdate({
-          target: modelCreators.id,
-          set: {
-            name: c.name,
-            country: c.country,
-            website: c.website,
-            color: c.color,
-          },
-        });
-    }
-
-    for (const r of bundle.releases) {
-      await tx
-        .insert(modelReleases)
-        .values(r)
-        .onConflictDoUpdate({
-          target: modelReleases.id,
-          set: {
-            family: r.family,
-            name: r.name,
-            version: r.version,
-            releaseDate: r.releaseDate,
-            contextWindow: r.contextWindow,
-            isOpenWeights: r.isOpenWeights,
-            sourceUrl: r.sourceUrl,
-          },
-        });
-    }
-
-    for (const v of bundle.variants) {
-      await tx
-        .insert(modelVariants)
-        .values(v)
-        .onConflictDoUpdate({
-          target: modelVariants.id,
-          set: {
-            modelReleaseId: v.modelReleaseId,
-            rawName: v.rawName,
-            displayName: v.displayName,
-            effortRaw: v.effortRaw,
-            effortNormalized: v.effortNormalized,
-            effortOrder: v.effortOrder,
-            effortLadderType: v.effortLadderType,
-            isReasoningModel: v.isReasoningModel,
-            isGrouped: v.isGrouped,
-          },
-        });
-    }
-
-    await tx.insert(dataSnapshots).values({
-      id: snapshotId,
-      source,
-      benchmarkVersion: indexVersion,
-      fetchedAt,
-      modelCount: bundle.releases.length,
-      variantCount: bundle.variants.length,
-      contentHash,
-      status: "staging",
-      isDemo,
-      // Package D: persist the multi-turn template version per snapshot so
-      // API/export can report which template produced the simulated costs.
-      templateVersion: MULTI_TURN_TEMPLATE_VERSION,
-    });
-
-    for (const m of bundle.measurements) {
-      const extra = extras.get(m.variantId);
-      const variant = variantById.get(m.variantId);
-      const release = variant
-        ? releaseById.get(variant.modelReleaseId)
-        : undefined;
-      const creator = release ? creatorById.get(release.creatorId) : undefined;
-      const adj = adjustedProvenance.get(m.variantId);
-      const { fieldSources: _fieldSources, ...measurementCore } = m;
-      void _fieldSources;
-      await tx.insert(benchmarkMeasurements).values({
-        ...measurementCore,
-        id: `${m.id}_${snapshotId}`,
-        snapshotId,
-        agentUsageJson: extra?.agentUsageJson ?? null,
-        agentCostJson: extra?.agentCostJson ?? null,
-        dataQualityLevel: extra?.dataQualityLevel ?? "D",
-        dataSourceType: extra?.dataSourceType ?? "unavailable",
-        dataSourcesJson: extra?.dataSourcesJson ?? "[]",
-        dataUpdatedAt: extra?.dataUpdatedAt ?? fetchedAt,
-        // Package B: frozen metadata written from this same normalization
-        // result, so later dimension renames never rewrite history.
-        frozenCreatorName: creator?.name ?? null,
-        frozenCreatorSlug: creator?.slug ?? null,
-        frozenReleaseName: release?.name ?? null,
-        frozenReleaseDate: release?.releaseDate ?? null,
-        frozenContextWindow: release?.contextWindow ?? null,
-        frozenDisplayName: variant?.displayName ?? null,
-        frozenEffortNormalized: variant?.effortNormalized ?? null,
-        legacyBackfill: 0,
-        // Package C: per-field provenance + quality evidence.
-        fieldSourcesJson: adj?.json ?? extra?.fieldSourcesJson ?? null,
-        qualityEvidenceJson: extra?.qualityEvidenceJson ?? null,
-        firstObservedAt: adj?.firstObservedAt ?? null,
-      });
-    }
-
-    await tx
-      .update(dataSnapshots)
-      .set({ status: "archived" })
-      .where(eq(dataSnapshots.status, "active"));
-
-    await tx
-      .update(dataSnapshots)
-      .set({ status: "active" })
-      .where(eq(dataSnapshots.id, snapshotId));
-  });
-
-  return { snapshotId, status: "success" };
-}
-
-async function buildBundleFromExistingLiveSnapshot(
-  fetchedAt: string
-): Promise<{ bundle: NormalizedBundle; indexVersion: string; source: string } | null> {
-  const { snapshot, rows } = await getActiveMeasurements();
-  if (!snapshot || snapshot.isDemo || rows.length === 0) return null;
-  // Carry frozen provenance/first-observation through the no-key reuse path;
-  // reuse must not re-date or re-attribute existing quotes.
-  const reconciliation = await getSnapshotReconciliation(snapshot.id);
-  const provenanceByVariant = new Map(
-    reconciliation.map((r) => [r.variantId, r.fieldSources])
-  );
-
-  const creatorMap = new Map<string, NormalizedBundle["creators"][number]>();
-  const releaseMap = new Map<string, NormalizedBundle["releases"][number]>();
-  const variants: NormalizedBundle["variants"] = [];
-  const measurements: NormalizedBundle["measurements"] = [];
-  const seenVariantIds = new Set<string>();
-
-  for (const r of rows) {
-    if (!creatorMap.has(r.creatorId)) {
-      creatorMap.set(r.creatorId, {
-        id: r.creatorId,
-        name: r.creatorName,
-        slug: r.creatorSlug,
-        country: null,
-        website: null,
-        color: r.creatorColor,
-      });
-    }
-    if (!releaseMap.has(r.releaseId)) {
-      releaseMap.set(r.releaseId, {
-        id: r.releaseId,
-        creatorId: r.creatorId,
-        family: r.family,
-        name: r.releaseName,
-        version: r.releaseDate,
-        releaseDate: r.releaseDate,
-        contextWindow: r.contextWindow,
-        isOpenWeights: r.isOpenWeights,
-        sourceUrl: r.sourceUrl,
-      });
-    }
-    if (!seenVariantIds.has(r.variantId)) {
-      seenVariantIds.add(r.variantId);
-      variants.push({
-        id: r.variantId,
-        modelReleaseId: r.releaseId,
-        sourceId: r.variantId.replace(/^var_/, ""),
-        sourceSlug: r.sourceSlug,
-        rawName: r.rawName,
-        displayName: r.displayName,
-        effortRaw: r.effortRaw,
-        effortNormalized: r.effortNormalized,
-        effortOrder: r.effortOrder,
-        effortLadderType: r.effortLadderType,
-        isReasoningModel: r.isReasoningModel,
-        isGrouped: r.isGrouped,
-      });
-    }
-    measurements.push({
-      id: `meas_${r.variantId}_${snapshot.benchmarkVersion}`,
-      variantId: r.variantId,
-      source: r.source,
-      sourceUrl: r.sourceUrl,
-      indexName: r.indexName,
-      indexVersion: r.indexVersion,
-      intelligenceScore: r.intelligenceScore,
-      codingScore: r.codingScore,
-      agenticScore: r.agenticScore,
-      inputPricePerMillion: r.inputPricePerMillion,
-      outputPricePerMillion: r.outputPricePerMillion,
-      cacheReadPricePerMillion: r.cacheReadPricePerMillion,
-      cacheWritePricePerMillion: r.cacheWritePricePerMillion,
-      outputTokensPerSecond: r.outputTokensPerSecond,
-      timeToFirstToken: r.timeToFirstToken,
-      timePerTask: r.timePerTask,
-      measuredAt: r.measuredAt,
-      fetchedAt,
-      pricingSource: r.pricingSource,
-      fieldSources:
-        (provenanceByVariant.get(r.variantId) as PricingProvenance | undefined) ??
-        undefined,
-    });
-  }
-
-  return {
-    bundle: {
-      creators: Array.from(creatorMap.values()),
-      releases: Array.from(releaseMap.values()),
-      variants,
-      measurements,
-      rejectedCount: 0,
-    },
-    indexVersion: snapshot.benchmarkVersion,
-    source: snapshot.source,
-  };
-}
 
 /**
  * no_change completion (Package E): the verified fetch advances only the
@@ -1387,10 +1046,22 @@ export async function runSyncJob(options?: {
       });
       // Idempotent distribution repair from the verified bytes; the
       // version file, snapshot ID and generation time stay untouched.
-      writeDistributionCopies({
-        serialized: bytes,
-        dateTag: (activeSnapshot.fileGeneratedAt ?? fetchedAt).slice(0, 10),
-      });
+      // The no_change terminal state has already committed at this point,
+      // so a distribution failure must not flip the reported outcome: it
+      // is flagged as pending and repaired by a later run.
+      let distributionPending = false;
+      try {
+        writeDistributionCopies({
+          serialized: bytes,
+          dateTag: (activeSnapshot.fileGeneratedAt ?? fetchedAt).slice(0, 10),
+        });
+      } catch (distErr) {
+        distributionPending = true;
+        console.warn(
+          `Distribution copy write failed after no_change commit for snapshot ${activeSnapshot.id}; will repair on a later run.`,
+          distErr
+        );
+      }
       return {
         jobId,
         status: "no_change",
@@ -1400,6 +1071,7 @@ export async function runSyncJob(options?: {
         rejectedCount,
         rateLimitRemaining,
         rateLimitReset,
+        distributionPending,
         isDemo,
       };
     }
@@ -1453,12 +1125,26 @@ export async function runSyncJob(options?: {
       rateLimitReset,
     });
 
-    maybeInjectFault("after_activation");
+    // The activation transaction has committed (job terminal state is
+    // success, publication is live). Distribution copies are a separate,
+    // repairable step: a failure here must NOT be reported as a failed
+    // sync — flag it as pending; a later no_change run repairs the copies
+    // from the verified publication bytes.
+    let distributionPending = false;
+    try {
+      maybeInjectFault("after_activation");
 
-    writeDistributionCopies({
-      serialized: publication.serialized,
-      dateTag: fileGeneratedAt.slice(0, 10),
-    });
+      writeDistributionCopies({
+        serialized: publication.serialized,
+        dateTag: fileGeneratedAt.slice(0, 10),
+      });
+    } catch (distErr) {
+      distributionPending = true;
+      console.warn(
+        `Distribution copy write failed after activation of snapshot ${snapshotId}; publication is live, copies pending repair.`,
+        distErr
+      );
+    }
 
     return {
       jobId,
@@ -1469,6 +1155,7 @@ export async function runSyncJob(options?: {
       rejectedCount,
       rateLimitRemaining,
       rateLimitReset,
+      distributionPending,
       isDemo,
     };
   } catch (err) {

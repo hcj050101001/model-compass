@@ -8,6 +8,10 @@
  *                                  {"acquired":bool}, hold, then release.
  *   sync-demo                      run one demo sync, print the result.
  *   sync-real                      run one real sync, print the result.
+ *   write-publication <id> <mark>  write an immutable publication file
+ *                                  with payload {marker: <mark>}, print
+ *                                  {"ok":bool,"sha256":...} (fix round 1
+ *                                  concurrency regression fixture).
  */
 import { ensureSchema } from "../../lib/database";
 import {
@@ -15,6 +19,10 @@ import {
   releaseSyncLease,
 } from "../../lib/sync/lease";
 import { runSyncJob } from "../../lib/sync/engine";
+import {
+  writeImmutablePublicationFile,
+  type StandardizedExportPayload,
+} from "../../lib/sync/standardized-export";
 
 async function main(): Promise<void> {
   const [mode, ...rest] = process.argv.slice(2);
@@ -38,6 +46,25 @@ async function main(): Promise<void> {
       mode === "sync-demo" ? { forceDemo: true } : { manual: false }
     );
     console.log(JSON.stringify(result));
+    return;
+  }
+
+  if (mode === "write-publication") {
+    const [snapshotId, marker] = rest;
+    try {
+      const pub = writeImmutablePublicationFile({
+        snapshotId,
+        payload: { marker } as unknown as StandardizedExportPayload,
+      });
+      console.log(JSON.stringify({ ok: true, sha256: pub.sha256 }));
+    } catch (err) {
+      console.log(
+        JSON.stringify({
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      );
+    }
     return;
   }
 

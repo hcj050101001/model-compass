@@ -96,9 +96,15 @@ describe("Package B: versioned migration registry", () => {
   it("initializes an empty database, is idempotent, and enforces the single-active constraint", async () => {
     const client = fileClient(makeTmpDir());
     const first = await runMigrations(client);
-    expect(first.applied).toEqual(MIGRATIONS.map((m) => m.version));
-    expect(first.version).toBe(EXPECTED_SCHEMA_VERSION);
-    expect(await getSchemaVersion(client)).toBe(EXPECTED_SCHEMA_VERSION);
+    // Literal pins (fix round 1, review P3-4): the registered migration set
+    // and the expected schema version are asserted against independent
+    // literals, so deleting a migration registration cannot silently move
+    // both the implementation and the expectation together.
+    expect(first.applied).toEqual([1, 2, 3, 4, 5]);
+    expect(MIGRATIONS.map((m) => m.version)).toEqual([1, 2, 3, 4, 5]);
+    expect(first.version).toBe(5);
+    expect(EXPECTED_SCHEMA_VERSION).toBe(5);
+    expect(await getSchemaVersion(client)).toBe(5);
 
     const second = await runMigrations(client);
     expect(second.applied).toEqual([]);
@@ -118,7 +124,7 @@ describe("Package B: versioned migration registry", () => {
     const client = fileClient(makeTmpDir());
     await client.executeMultiple(LEGACY_DDL);
     const res = await runMigrations(client);
-    expect(res.applied).toEqual(MIGRATIONS.map((m) => m.version));
+    expect(res.applied).toEqual([1, 2, 3, 4, 5]);
 
     const cols = await client.execute(`PRAGMA table_info(benchmark_measurements);`);
     const colNames = cols.rows.map((r) => String(r.name));
@@ -281,7 +287,73 @@ describe("Package B: frozen snapshot reads (application level)", () => {
     expect(reconciliation.every((r) => r.legacyBackfill === false)).toBe(true);
   });
 
-  it("commitSnapshotAtomically writes frozen columns and firstObservedAt continues across snapshots", async () => {
+
+  // Fix round 1 (review P3-1): the legacy commitSnapshotAtomically export
+  // was deleted because it bypassed the lease, publication record and job
+  // terminal state. This helper drives the real publication path instead:
+  // acquire the lease + a running job row, stageSnapshot, then
+  // activateSnapshot with a publication record.
+  let commitCounter = 0;
+  async function stageAndActivate(params: {
+    bundle: Parameters<typeof engine.stageSnapshot>[0]["bundle"];
+    extras: Parameters<typeof engine.stageSnapshot>[0]["extras"];
+    fetchedAt: string;
+    expectedActiveSnapshotId: string | null;
+  }): Promise<{ snapshotId: string; status: "success" }> {
+    commitCounter += 1;
+    const owner = `commit_test_owner_${Date.now()}_${commitCounter}`;
+    const jobId = `commit_test_job_${Date.now()}_${commitCounter}`;
+    const client = createClient({ url: `file:${appDbPath}` });
+    await client.execute({
+      sql: `INSERT INTO sync_locks (lock_key, locked_at, expires_at, owner)
+            VALUES ('global_data_sync', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+300 seconds'), ?)`,
+      args: [owner],
+    });
+    await client.execute({
+      sql: `INSERT INTO sync_jobs (id, started_at, status, fetched_count, valid_count, rejected_count, owner)
+            VALUES (?, ?, 'running', 0, 0, 0, ?)`,
+      args: [jobId, params.fetchedAt, owner],
+    });
+    client.close();
+    try {
+      const { snapshotId } = await engine.stageSnapshot({
+        bundle: params.bundle,
+        extras: params.extras,
+        source: "artificial-analysis",
+        indexVersion: "5",
+        fetchedAt: params.fetchedAt,
+        isDemo: false,
+        owner,
+        expectedActiveSnapshotId: params.expectedActiveSnapshotId,
+      });
+      await engine.activateSnapshot({
+        snapshotId,
+        owner,
+        jobId,
+        fetchedAt: params.fetchedAt,
+        exportSha256: "test-publication-sha",
+        exportPath: `snapshots/${snapshotId}.json`,
+        fileGeneratedAt: params.fetchedAt,
+        sourceDataAt: null,
+        fetchedCount: 1,
+        validCount: 1,
+        rejectedCount: 0,
+        rateLimitRemaining: null,
+        rateLimitReset: null,
+      });
+      return { snapshotId, status: "success" };
+    } finally {
+      const cleanup = createClient({ url: `file:${appDbPath}` });
+      await cleanup.execute({
+        sql: `DELETE FROM sync_locks WHERE lock_key = 'global_data_sync' AND owner = ?`,
+        args: [owner],
+      });
+      cleanup.close();
+    }
+  }
+
+  it("stage+activate writes frozen columns and firstObservedAt continues across snapshots", async () => {
     const item: AAModelItem = {
       id: "commit-model-1",
       name: "Commit Model (Low)",
@@ -310,13 +382,11 @@ describe("Package B: frozen snapshot reads (application level)", () => {
         },
       ],
     ]);
-    const first = await engine.commitSnapshotAtomically({
+    const first = await stageAndActivate({
       bundle: bundle1,
       extras: extras1,
-      source: "artificial-analysis",
-      indexVersion: "5",
       fetchedAt: "2026-07-02T00:00:00Z",
-      isDemo: false,
+      expectedActiveSnapshotId: "snap_frozen",
     });
     expect(first.status).toBe("success");
     const rec1 = await queries.getSnapshotReconciliation(first.snapshotId);
@@ -349,13 +419,11 @@ describe("Package B: frozen snapshot reads (application level)", () => {
         },
       ],
     ]);
-    const second = await engine.commitSnapshotAtomically({
+    const second = await stageAndActivate({
       bundle: bundle2,
       extras: extras2,
-      source: "artificial-analysis",
-      indexVersion: "5",
       fetchedAt: "2026-07-05T00:00:00Z",
-      isDemo: false,
+      expectedActiveSnapshotId: first.snapshotId,
     });
     expect(second.status).toBe("success");
     expect(second.snapshotId).not.toBe(first.snapshotId);

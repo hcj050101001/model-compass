@@ -210,6 +210,44 @@ export function writeFileAtomically(
   return target;
 }
 
+/**
+ * Write bytes to `dir/fileName` immutably: exclusive temp file in the same
+ * directory, fsync, then hard-link the temp file onto the target. The link
+ * is atomic and fails with EEXIST when the target already exists, so two
+ * concurrent writers can never overwrite each other — exactly one wins and
+ * the loser observes the winner's file. Returns false when the target
+ * already existed (temp file removed, target untouched).
+ */
+function writeFileImmutableAtomically(
+  dir: string,
+  fileName: string,
+  bytes: string
+): boolean {
+  fs.mkdirSync(dir, { recursive: true });
+  const target = path.join(dir, fileName);
+  const tmp = path.join(
+    dir,
+    `.${fileName}.${crypto.randomBytes(6).toString("hex")}.tmp`
+  );
+  const fd = fs.openSync(tmp, "wx");
+  try {
+    fs.writeFileSync(fd, bytes, "utf8");
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  try {
+    fs.linkSync(tmp, target);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw err;
+  }
+  fs.rmSync(tmp, { force: true });
+  fsyncDir(dir);
+  return true;
+}
+
 export interface PublicationFile {
   /** Path relative to the data dir, registered in the DB publication record. */
   relativePath: string;
@@ -237,7 +275,15 @@ export function writeImmutablePublicationFile(params: {
   const relativePath = `snapshots/${snapshotId}.json`;
   const absolutePath = path.join(getDataDir(), relativePath);
 
-  if (fs.existsSync(absolutePath)) {
+  // Atomic immutable publish: the hard-link create either wins outright or
+  // reports the target already exists — there is no check-then-overwrite
+  // window in which a concurrent writer could replace a published file.
+  const created = writeFileImmutableAtomically(
+    path.dirname(absolutePath),
+    `${snapshotId}.json`,
+    serialized
+  );
+  if (!created) {
     const existing = fs.readFileSync(absolutePath, "utf8");
     if (sha256Hex(existing) !== sha256) {
       throw new Error(
@@ -246,8 +292,6 @@ export function writeImmutablePublicationFile(params: {
     }
     return { relativePath, absolutePath, sha256, serialized: existing };
   }
-
-  writeFileAtomically(path.dirname(absolutePath), `${snapshotId}.json`, serialized);
   return { relativePath, absolutePath, sha256, serialized };
 }
 
