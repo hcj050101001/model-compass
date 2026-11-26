@@ -1,9 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
-import { Compass, Languages, LogOut, Moon, Sun } from "lucide-react";
+import {
+  Compass,
+  GitCompareArrows,
+  Languages,
+  LayoutDashboard,
+  LogOut,
+  Moon,
+  Sun,
+} from "lucide-react";
 import { useLocale } from "@/components/i18n/LocaleProvider";
 import { useDashboardStore } from "@/lib/store/dashboard";
 
@@ -20,6 +28,7 @@ export function Header({
   privateMode = true,
 }: HeaderProps) {
   const router = useRouter();
+  const pathname = usePathname();
   const { locale, toggleLocale, t } = useLocale();
   const { theme, toggleTheme } = useDashboardStore();
 
@@ -59,19 +68,29 @@ export function Header({
 
         <nav
           aria-label="Primary"
-          className="order-3 flex w-full shrink-0 items-center gap-1 text-xs sm:order-none sm:w-auto sm:gap-1.5"
+          className="order-3 flex w-full shrink-0 items-center gap-2.5 text-xs sm:order-none sm:w-auto sm:gap-3.5"
         >
           <Link
             href="/"
-            className="flex h-9 items-center rounded-lg px-2 font-medium text-text-secondary transition hover:text-text-primary active:scale-95 sm:h-8 sm:px-2.5"
+            className={`flex h-9 items-center gap-2 rounded-lg border px-3 font-medium transition active:scale-95 sm:h-8 sm:px-3.5 ${
+              pathname === "/"
+                ? "border-accent/40 bg-accent/10 text-accent shadow-sm"
+                : "border-border/80 bg-bg-tertiary/70 text-text-secondary hover:border-accent/40 hover:bg-bg-tertiary hover:text-text-primary"
+            }`}
           >
-            {t("navDashboard")}
+            <LayoutDashboard className="h-3.5 w-3.5 shrink-0" />
+            <span>{t("navDashboard")}</span>
           </Link>
           <Link
             href="/compare"
-            className="flex h-9 items-center rounded-lg px-2 font-medium text-text-secondary transition hover:text-text-primary active:scale-95 sm:h-8 sm:px-2.5"
+            className={`flex h-9 items-center gap-2 rounded-lg border px-3 font-medium transition active:scale-95 sm:h-8 sm:px-3.5 ${
+              pathname.startsWith("/compare")
+                ? "border-accent/40 bg-accent/10 text-accent shadow-sm"
+                : "border-border/80 bg-bg-tertiary/70 text-text-secondary hover:border-accent/40 hover:bg-bg-tertiary hover:text-text-primary"
+            }`}
           >
-            {t("navCompare")}
+            <GitCompareArrows className="h-3.5 w-3.5 shrink-0" />
+            <span>{t("navCompare")}</span>
           </Link>
         </nav>
 

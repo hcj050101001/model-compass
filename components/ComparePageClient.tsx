@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { Search, X } from "lucide-react";
+import { X } from "lucide-react";
 import { compareVariants, toTargetPoints } from "@/lib/analytics/targets";
 import type { MeasurementRow } from "@/lib/analytics/types";
 import { useLocale } from "@/components/i18n/LocaleProvider";
@@ -12,6 +12,7 @@ import {
   formatScore,
   formatSpeed,
   formatUsd,
+  getCreatorDisplayName,
   getDeveloperAgentCost,
 } from "@/lib/utils/format";
 import { DemoBanner } from "./layout/DemoBanner";
@@ -36,9 +37,8 @@ export function ComparePageClient({
   privateMode: boolean;
 }) {
   const router = useRouter();
-  const { t } = useLocale();
+  const { locale, t } = useLocale();
   const store = useDashboardStore();
-  const [searchQuery, setSearchQuery] = useState("");
 
   const rowByVariantId = useMemo(
     () => new Map(rows.map((r) => [r.variantId, r])),
@@ -78,25 +78,16 @@ export function ComparePageClient({
   );
 
   const availableOptions = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
     const selectedSet = new Set(store.compareIds);
     return rows
-      .filter((r) => {
-        if (selectedSet.has(r.variantId)) return false;
-        if (!q) return true;
-        return (
-          r.displayName.toLowerCase().includes(q) ||
-          r.creatorName.toLowerCase().includes(q) ||
-          r.variantId.toLowerCase().includes(q)
-        );
-      })
+      .filter((r) => !selectedSet.has(r.variantId))
       .sort((a, b) => {
         const aReady = targetPointByVariantId.has(a.variantId) ? 1 : 0;
         const bReady = targetPointByVariantId.has(b.variantId) ? 1 : 0;
         if (aReady !== bReady) return bReady - aReady;
         return (b.intelligenceScore ?? -1) - (a.intelligenceScore ?? -1);
       });
-  }, [rows, searchQuery, store.compareIds, targetPointByVariantId]);
+  }, [rows, store.compareIds, targetPointByVariantId]);
 
   const isMaxReached = selectedRows.length >= MAX_COMPARE_VARIANTS;
 
@@ -136,48 +127,23 @@ export function ComparePageClient({
             <label className="mb-1.5 block font-medium text-text-secondary">
               {t("addVariantPicker")}
             </label>
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <div className="relative w-full sm:max-w-xs">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder={t("compareSearchPlaceholder")}
-                  className="h-10 w-full rounded-lg border border-border bg-bg-primary pl-8 pr-3 text-base text-text-primary placeholder:text-text-muted sm:h-9 sm:rounded-md sm:text-xs"
-                />
-              </div>
-              <select
-                value=""
-                disabled={isMaxReached}
-                onChange={(e) => {
-                  if (e.target.value && !isMaxReached) {
-                    store.toggleCompare(e.target.value);
-                  }
-                }}
-                className="h-10 w-full max-w-md rounded-lg border border-border bg-bg-primary px-3 text-base text-text-primary disabled:cursor-not-allowed disabled:opacity-50 sm:h-9 sm:rounded-md sm:text-xs"
-              >
-                <option value="">
-                  {availableOptions.length === 0
-                    ? t("compareNoMatch")
-                    : t("selectVariantPlaceholder")}
+            <select
+              value=""
+              disabled={isMaxReached}
+              onChange={(e) => {
+                if (e.target.value && !isMaxReached) {
+                  store.toggleCompare(e.target.value);
+                }
+              }}
+              className="h-10 w-full max-w-md rounded-lg border border-border bg-bg-primary px-3 text-base text-text-primary disabled:cursor-not-allowed disabled:opacity-50 sm:h-9 sm:rounded-md sm:text-xs"
+            >
+              <option value="">{t("selectVariantPlaceholder")}</option>
+              {availableOptions.map((r) => (
+                <option key={r.variantId} value={r.variantId}>
+                  {getCreatorDisplayName(r.creatorSlug, r.creatorName, locale)} · {r.displayName}
                 </option>
-                {availableOptions.map((r) => {
-                  const devCost = getDeveloperAgentCost(r, "standard");
-                  const estCost = devCost
-                    ? devCost.totalUsd
-                    : r.agentCost.rasc ?? r.agentCost.estimated_cost;
-                  const incomplete = !targetPointByVariantId.has(r.variantId);
-                  return (
-                    <option key={r.variantId} value={r.variantId}>
-                      {r.creatorName} · {r.displayName} (
-                      {formatScore(r.intelligenceScore)} pts / {formatUsd(estCost)}
-                      {incomplete ? ` · ${t("compareIncompleteTag")}` : ""})
-                    </option>
-                  );
-                })}
-              </select>
-            </div>
+              ))}
+            </select>
             {isMaxReached && (
               <p className="mt-1.5 text-[11px] text-amber-500">
                 {t("compareMaxReached")}
@@ -196,7 +162,9 @@ export function ComparePageClient({
                     key={row.variantId}
                     className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-primary px-2.5 py-1 text-xs text-text-primary"
                   >
-                    <span className="text-text-muted">{row.creatorName} ·</span>
+                    <span className="text-text-muted">
+                      {getCreatorDisplayName(row.creatorSlug, row.creatorName, locale)} ·
+                    </span>
                     <span className="font-medium">{row.displayName}</span>
                     <button
                       type="button"
@@ -235,7 +203,7 @@ export function ComparePageClient({
                               {row.displayName}
                             </div>
                             <div className="font-normal text-text-muted">
-                              {row.creatorName}
+                              {getCreatorDisplayName(row.creatorSlug, row.creatorName, locale)}
                             </div>
                           </div>
                           <button
