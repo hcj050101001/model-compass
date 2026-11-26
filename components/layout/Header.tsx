@@ -73,12 +73,6 @@ export function Header({
           >
             {t("navCompare")}
           </Link>
-          <Link
-            href="/settings"
-            className="flex h-9 items-center rounded-lg px-2 font-medium text-text-secondary transition hover:text-text-primary active:scale-95 sm:h-8 sm:px-2.5"
-          >
-            {t("navSettings")}
-          </Link>
         </nav>
 
         <div className="flex shrink-0 items-center gap-1.5 text-xs sm:gap-2">

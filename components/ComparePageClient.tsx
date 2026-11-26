@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Search, X } from "lucide-react";
 import { compareVariants, toTargetPoints } from "@/lib/analytics/targets";
 import type { MeasurementRow } from "@/lib/analytics/types";
 import { useLocale } from "@/components/i18n/LocaleProvider";
@@ -11,10 +12,13 @@ import {
   formatScore,
   formatSpeed,
   formatUsd,
+  getDeveloperAgentCost,
 } from "@/lib/utils/format";
 import { DemoBanner } from "./layout/DemoBanner";
 import { Footer } from "./layout/Footer";
 import { Header } from "./layout/Header";
+
+const MAX_COMPARE_VARIANTS = 8;
 
 export function ComparePageClient({
   rows,
@@ -34,21 +38,67 @@ export function ComparePageClient({
   const router = useRouter();
   const { t } = useLocale();
   const store = useDashboardStore();
-  const targetPoints = useMemo(() => toTargetPoints(rows), [rows]);
+  const [searchQuery, setSearchQuery] = useState("");
 
-  const selected = useMemo(
-    () => targetPoints.filter((p) => store.compareIds.includes(p.row.variantId)),
-    [targetPoints, store.compareIds]
+  const rowByVariantId = useMemo(
+    () => new Map(rows.map((r) => [r.variantId, r])),
+    [rows]
+  );
+
+  // Preserve selection order and show every selected row even if score or cost is missing.
+  const selectedRows = useMemo(
+    () =>
+      store.compareIds
+        .map((id) => rowByVariantId.get(id))
+        .filter((r): r is MeasurementRow => r !== undefined),
+    [rowByVariantId, store.compareIds]
+  );
+
+  const targetPoints = useMemo(() => toTargetPoints(rows), [rows]);
+  const targetPointByVariantId = useMemo(
+    () => new Map(targetPoints.map((p) => [p.row.variantId, p])),
+    [targetPoints]
+  );
+
+  const selectedTargetPoints = useMemo(
+    () =>
+      selectedRows
+        .map((r) => targetPointByVariantId.get(r.variantId))
+        .filter((p): p is NonNullable<typeof p> => p !== undefined),
+    [selectedRows, targetPointByVariantId]
   );
 
   const comparison = useMemo(
     () =>
-      compareVariants(selected, {
+      compareVariants(selectedTargetPoints, {
         costTolerancePct: store.costTolerancePct,
         minScoreGain: store.minScoreGain,
       }),
-    [selected, store.costTolerancePct, store.minScoreGain]
+    [selectedTargetPoints, store.costTolerancePct, store.minScoreGain]
   );
+
+  const availableOptions = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const selectedSet = new Set(store.compareIds);
+    return rows
+      .filter((r) => {
+        if (selectedSet.has(r.variantId)) return false;
+        if (!q) return true;
+        return (
+          r.displayName.toLowerCase().includes(q) ||
+          r.creatorName.toLowerCase().includes(q) ||
+          r.variantId.toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => {
+        const aReady = targetPointByVariantId.has(a.variantId) ? 1 : 0;
+        const bReady = targetPointByVariantId.has(b.variantId) ? 1 : 0;
+        if (aReady !== bReady) return bReady - aReady;
+        return (b.intelligenceScore ?? -1) - (a.intelligenceScore ?? -1);
+      });
+  }, [rows, searchQuery, store.compareIds, targetPointByVariantId]);
+
+  const isMaxReached = selectedRows.length >= MAX_COMPARE_VARIANTS;
 
   return (
     <div className="min-h-screen flex flex-col bg-bg-primary text-text-primary">
@@ -69,40 +119,102 @@ export function ComparePageClient({
             </h1>
             <p className="text-xs text-text-muted">{t("comparePageDesc")}</p>
           </div>
-          {store.compareIds.length > 0 && (
+          {selectedRows.length > 0 && (
             <button
               type="button"
               onClick={store.clearCompare}
               className="rounded-md border border-border bg-bg-secondary px-3 py-1.5 text-xs text-text-secondary hover:border-rose-400 hover:text-rose-400"
             >
-              Clear All ({store.compareIds.length})
+              {t("compareClearAll", { count: selectedRows.length })}
             </button>
           )}
         </div>
 
-        {/* Add Variant Picker */}
-        <div className="rounded-xl border border-border bg-bg-secondary p-4 text-xs">
-          <label className="mb-1.5 block font-medium text-text-secondary">
-            {t("addVariantPicker")}
-          </label>
-          <select
-            value=""
-            onChange={(e) => {
-              if (e.target.value) store.toggleCompare(e.target.value);
-            }}
-            className="h-10 w-full max-w-md rounded-lg border border-border bg-bg-primary px-3 text-base text-text-primary sm:h-9 sm:rounded-md sm:text-xs"
-          >
-            <option value="">{t("selectVariantPlaceholder")}</option>
-            {rows.map((r) => (
-              <option key={r.variantId} value={r.variantId}>
-                {r.creatorName} · {r.displayName} (
-                {formatScore(r.intelligenceScore)} pts / {formatUsd(r.agentCost.rasc ?? r.agentCost.estimated_cost)})
-              </option>
-            ))}
-          </select>
+        {/* Add Variant Picker + Selected List */}
+        <div className="space-y-4 rounded-xl border border-border bg-bg-secondary p-4 text-xs">
+          <div>
+            <label className="mb-1.5 block font-medium text-text-secondary">
+              {t("addVariantPicker")}
+            </label>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="relative w-full sm:max-w-xs">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder={t("compareSearchPlaceholder")}
+                  className="h-10 w-full rounded-lg border border-border bg-bg-primary pl-8 pr-3 text-base text-text-primary placeholder:text-text-muted sm:h-9 sm:rounded-md sm:text-xs"
+                />
+              </div>
+              <select
+                value=""
+                disabled={isMaxReached}
+                onChange={(e) => {
+                  if (e.target.value && !isMaxReached) {
+                    store.toggleCompare(e.target.value);
+                  }
+                }}
+                className="h-10 w-full max-w-md rounded-lg border border-border bg-bg-primary px-3 text-base text-text-primary disabled:cursor-not-allowed disabled:opacity-50 sm:h-9 sm:rounded-md sm:text-xs"
+              >
+                <option value="">
+                  {availableOptions.length === 0
+                    ? t("compareNoMatch")
+                    : t("selectVariantPlaceholder")}
+                </option>
+                {availableOptions.map((r) => {
+                  const devCost = getDeveloperAgentCost(r, "standard");
+                  const estCost = devCost
+                    ? devCost.totalUsd
+                    : r.agentCost.rasc ?? r.agentCost.estimated_cost;
+                  const incomplete = !targetPointByVariantId.has(r.variantId);
+                  return (
+                    <option key={r.variantId} value={r.variantId}>
+                      {r.creatorName} · {r.displayName} (
+                      {formatScore(r.intelligenceScore)} pts / {formatUsd(estCost)}
+                      {incomplete ? ` · ${t("compareIncompleteTag")}` : ""})
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+            {isMaxReached && (
+              <p className="mt-1.5 text-[11px] text-amber-500">
+                {t("compareMaxReached")}
+              </p>
+            )}
+          </div>
+
+          {selectedRows.length > 0 && (
+            <div className="border-t border-border/70 pt-3">
+              <div className="mb-2 text-[11px] font-medium text-text-muted">
+                {t("compareSelectedList", { count: selectedRows.length })}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {selectedRows.map((row) => (
+                  <span
+                    key={row.variantId}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-primary px-2.5 py-1 text-xs text-text-primary"
+                  >
+                    <span className="text-text-muted">{row.creatorName} ·</span>
+                    <span className="font-medium">{row.displayName}</span>
+                    <button
+                      type="button"
+                      onClick={() => store.toggleCompare(row.variantId)}
+                      title={t("compareRemoveVariant")}
+                      aria-label={`${t("compareRemoveVariant")} ${row.displayName}`}
+                      className="ml-0.5 rounded-full p-0.5 text-text-muted transition hover:bg-rose-500/15 hover:text-rose-400"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
-        {comparison.items.length === 0 ? (
+        {selectedRows.length === 0 ? (
           <div className="rounded-xl border border-dashed border-border bg-bg-secondary p-10 text-center text-sm text-text-muted">
             {t("noCompareSelected")}
           </div>
@@ -113,15 +225,28 @@ export function ComparePageClient({
                 <thead className="border-b border-border bg-bg-tertiary text-text-muted">
                   <tr>
                     <th className="sticky left-0 z-10 whitespace-nowrap bg-bg-tertiary px-3 py-3 sm:px-4">
-                      Metric
+                      {t("compareMetric")}
                     </th>
-                    {comparison.items.map((item) => (
-                      <th key={item.id} className="whitespace-nowrap px-3 py-3 sm:px-4">
-                        <div className="font-bold text-text-primary">
-                          {item.row.displayName}
-                        </div>
-                        <div className="font-normal text-text-muted">
-                          {item.row.creatorName}
+                    {selectedRows.map((row) => (
+                      <th key={row.variantId} className="whitespace-nowrap px-3 py-3 sm:px-4">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <div className="font-bold text-text-primary">
+                              {row.displayName}
+                            </div>
+                            <div className="font-normal text-text-muted">
+                              {row.creatorName}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => store.toggleCompare(row.variantId)}
+                            title={t("compareRemoveVariant")}
+                            aria-label={`${t("compareRemoveVariant")} ${row.displayName}`}
+                            className="rounded p-0.5 text-text-muted transition hover:bg-rose-500/15 hover:text-rose-400"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
                         </div>
                       </th>
                     ))}
@@ -130,61 +255,65 @@ export function ComparePageClient({
                 <tbody className="divide-y divide-border">
                   {[
                     {
-                      label: `AA Intelligence (v${snapshot?.benchmarkVersion ?? "5.0"})`,
-                      fn: (i: (typeof comparison.items)[number]) =>
-                        formatScore(i.score),
+                      label: t("compareIntelIndex", {
+                        version: snapshot?.benchmarkVersion ?? "5.0",
+                      }),
+                      fn: (r: MeasurementRow) => formatScore(r.intelligenceScore),
                     },
                     {
-                      label: "AA Coding Index",
-                      fn: (i: (typeof comparison.items)[number]) =>
-                        formatScore(i.row.codingScore),
+                      label: t("compareCodingIndex"),
+                      fn: (r: MeasurementRow) => formatScore(r.codingScore),
                     },
                     {
-                      label: "AA Agentic Index",
-                      fn: (i: (typeof comparison.items)[number]) =>
-                        formatScore(i.row.agenticScore),
+                      label: t("compareAgenticIndex"),
+                      fn: (r: MeasurementRow) => formatScore(r.agenticScore),
                     },
                     {
-                      label: "RASC (Real) / EAC (Est.)",
-                      fn: (i: (typeof comparison.items)[number]) =>
-                        `${formatUsd(i.row.agentCost.rasc)} / ${formatUsd(i.row.agentCost.estimated_cost)}`,
+                      label: t("compareCostMetric"),
+                      fn: (r: MeasurementRow) => {
+                        const devCost = getDeveloperAgentCost(r, "standard");
+                        const eac = devCost
+                          ? devCost.totalUsd
+                          : r.agentCost.estimated_cost;
+                        return `${formatUsd(r.agentCost.rasc)} / ${formatUsd(eac)}`;
+                      },
                     },
                     {
-                      label: "Data Quality",
-                      fn: (i: (typeof comparison.items)[number]) =>
-                        `Grade ${i.row.dataQuality.level} (${i.row.agentUsage.sample_count} samples)`,
+                      label: t("compareDataQuality"),
+                      fn: (r: MeasurementRow) =>
+                        t("compareQualityValue", {
+                          level: r.dataQuality.level,
+                          count: r.agentUsage.sample_count,
+                        }),
                     },
                     {
-                      label: "Input / Output (1M)",
-                      fn: (i: (typeof comparison.items)[number]) =>
-                        `${formatUsd(i.row.inputPricePerMillion)} / ${formatUsd(i.row.outputPricePerMillion)}`,
+                      label: t("compareTokenPrices"),
+                      fn: (r: MeasurementRow) =>
+                        `${formatUsd(r.inputPricePerMillion)} / ${formatUsd(r.outputPricePerMillion)}`,
                     },
                     {
-                      label: "Output Speed",
-                      fn: (i: (typeof comparison.items)[number]) =>
-                        formatSpeed(i.row.outputTokensPerSecond),
+                      label: t("compareOutputSpeed"),
+                      fn: (r: MeasurementRow) => formatSpeed(r.outputTokensPerSecond),
                     },
                     {
-                      label: "TTFT",
-                      fn: (i: (typeof comparison.items)[number]) =>
-                        formatLatency(i.row.timeToFirstToken),
+                      label: t("compareTtft"),
+                      fn: (r: MeasurementRow) => formatLatency(r.timeToFirstToken),
                     },
                     {
-                      label: "Release Date",
-                      fn: (i: (typeof comparison.items)[number]) =>
-                        i.row.releaseDate ?? "—",
+                      label: t("compareReleaseDate"),
+                      fn: (r: MeasurementRow) => r.releaseDate ?? "—",
                     },
                   ].map((metric) => (
                     <tr key={metric.label}>
                       <td className="sticky left-0 z-10 whitespace-nowrap bg-bg-secondary px-3 py-2.5 font-medium text-text-muted sm:px-4">
                         {metric.label}
                       </td>
-                      {comparison.items.map((item) => (
+                      {selectedRows.map((row) => (
                         <td
-                          key={item.id}
+                          key={row.variantId}
                           className="whitespace-nowrap px-3 py-2.5 tabular-nums text-text-primary sm:px-4"
                         >
-                          {metric.fn(item)}
+                          {metric.fn(row)}
                         </td>
                       ))}
                     </tr>
@@ -196,7 +325,7 @@ export function ComparePageClient({
             {comparison.pairwise.length > 0 && (
               <div className="rounded-xl border border-border bg-bg-secondary p-4 text-xs">
                 <h2 className="mb-3 font-semibold text-text-primary">
-                  Pairwise Dominance & Trade-off Analysis
+                  {t("pairwiseTitle")}
                 </h2>
                 <div className="grid gap-2.5 md:grid-cols-2">
                   {comparison.pairwise.map((pw) => {
@@ -212,21 +341,21 @@ export function ComparePageClient({
                         </div>
                         <div className="mt-1 flex flex-wrap gap-3 text-text-muted">
                           <span>
-                            Score Δ: {pw.scoreGap >= 0 ? "+" : ""}
+                            {t("compareScoreGap")}: {pw.scoreGap >= 0 ? "+" : ""}
                             {pw.scoreGap.toFixed(1)} pts
                           </span>
                           <span>
-                            Cost Δ: {pw.costGapUsd >= 0 ? "+" : ""}
+                            {t("compareCostGap")}: {pw.costGapUsd >= 0 ? "+" : ""}
                             {formatUsd(pw.costGapUsd)}
                           </span>
                           <span className="font-semibold text-accent">
                             {pw.relation === "a_dominates_b"
-                              ? `${a.row.displayName} strictly dominates`
+                              ? t("compareDominates", { name: a.row.displayName })
                               : pw.relation === "b_dominates_a"
-                                ? `${b.row.displayName} strictly dominates`
+                                ? t("compareDominates", { name: b.row.displayName })
                                 : pw.relation === "equivalent"
-                                  ? "Exact Pareto tie"
-                                  : "Non-dominated trade-off"}
+                                  ? t("compareExactTie")
+                                  : t("compareTradeoff")}
                           </span>
                         </div>
                       </div>
