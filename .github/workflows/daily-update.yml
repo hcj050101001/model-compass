@@ -87,8 +87,19 @@ jobs:
             console.log("Dual-file digest validation ok:", payload.snapshot_id, digest);
           '
 
-      - name: Run automated unit tests
-        run: npm test
+      - name: Run automated data & sync tests
+        run: >
+          npx vitest run
+          tests/sync.test.ts
+          tests/sync-publication.test.ts
+          tests/normalization.test.ts
+          tests/source-matching.test.ts
+          tests/db-migration.test.ts
+          tests/readiness.test.ts
+          tests/analytics.test.ts
+          tests/agent-cost.test.ts
+          tests/pareto.test.ts
+          tests/frontier-route.test.ts
 
   # Publication is gated by the AA_GIT_PUBLICATION_APPROVED repository
   # variable (default: unset/off). While unapproved this job never runs:
