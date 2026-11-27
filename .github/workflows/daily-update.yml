@@ -37,16 +37,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "22.14.0"
           cache: "npm"
 
       - name: Install dependencies
-        run: |
-          npm config set fetch-retries 5
-          npm config set fetch-retry-mintimeout 20000
-          npm config set fetch-retry-maxtimeout 120000
-          npm config set maxsockets 5
-          npm ci --no-audit --no-fund || (npm cache clean --force && npm ci --no-audit --no-fund)
+        timeout-minutes: 5
+        run: npm ci --no-audit --no-fund
 
       - name: Check AA API key is configured
         env:
@@ -117,16 +113,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "22.14.0"
           cache: "npm"
 
       - name: Install dependencies
-        run: |
-          npm config set fetch-retries 5
-          npm config set fetch-retry-mintimeout 20000
-          npm config set fetch-retry-maxtimeout 120000
-          npm config set maxsockets 5
-          npm ci --no-audit --no-fund || (npm cache clean --force && npm ci --no-audit --no-fund)
+        timeout-minutes: 5
+        run: npm ci --no-audit --no-fund
 
       - name: Prepare isolated data root
         run: |
